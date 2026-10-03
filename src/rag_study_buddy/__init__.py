@@ -1,1 +1,1 @@
-"""RAG Study Buddy: learn retrieval-augmented generation step by step."""
+"""RAG Study Buddy: document question answering with source citations."""
