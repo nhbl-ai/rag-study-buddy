@@ -5,7 +5,7 @@
 - Người dùng muốn vừa học vừa xây sản phẩm trên GitHub cá nhân.
 - Sản phẩm: RAG Study Buddy, trợ lý học và tra cứu RAG có bằng chứng và dẫn nguồn.
 - Repo: https://github.com/nhbl-ai/rag-study-buddy
-- Thư mục local: `C:\Users\ADMIN\Documents\Codex\projects\rag-study-buddy`.
+- Thư mục local: `D:\Personal project\rag-study-buddy`.
 - Repo được tạo private để bắt đầu; chưa có yêu cầu chuyển public.
 - Nguồn học: https://github.com/langchain-ai/rag-from-scratch
 - Nguồn dữ liệu đầu tiên: nội dung văn bản và code liên quan trong `rag_from_scratch_1_to_4.ipynb`.
