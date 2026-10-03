@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Credentials (only the template may be tracked)
+.env
+.env.*
+!.env.example
+
+# Notebook and local tools
+.ipynb_checkpoints/
+.idea/
+.vscode/
+
+# Generated and local data
+data/raw/
+data/processed/
+data/private/
+.chroma/
+chroma_db/
+artifacts/
+work/
+
+# Operating system
+.DS_Store
+Thumbs.db
