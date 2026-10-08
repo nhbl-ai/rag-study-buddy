@@ -11,7 +11,7 @@ dist/
 .coverage
 htmlcov/
 
-# Credentials (only the template may be tracked)
+# Credentials
 .env
 .env.*
 !.env.example

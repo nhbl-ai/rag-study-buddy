@@ -1,10 +1,10 @@
-# Hướng dẫn cộng tác
+# Collaboration guidelines
 
-- Mục tiêu: xây ứng dụng chat với tài liệu, có dẫn nguồn và bằng chứng.
-- Người dùng tự code và build. Hỗ trợ theo yêu cầu cụ thể; không tự áp đặt lộ trình học, bài tập hoặc công nghệ.
-- Trao đổi bằng tiếng Việt. Tên biến, hàm và module dùng tiếng Anh dễ hiểu.
-- Đọc `docs/project-context.md` trước khi tiếp tục một chat mới; cập nhật khi quyết định dự án thay đổi.
-- Giữ thông tin nguồn của nội dung để truy xuất và dẫn nguồn.
-- Kiểm tra phù hợp với thay đổi. Không báo đã chạy ứng dụng hoặc API nếu chưa thực hiện.
-- Khi đánh giá RAG, kiểm tra retrieval riêng với generation.
-- Không commit API key, `.env`, dữ liệu riêng tư, vector store hoặc outputs lớn. Không sửa mã bên thứ ba chỉ để che lỗi.
+- Goal: build a document chat application with citations and evidence.
+- The user codes and builds the application themselves. Help with specific requests; do not impose a learning path, exercises, or technology choices.
+- Communicate in Vietnamese. Use clear English names for variables, functions, and modules.
+- Read `docs/project-context.md` before continuing in a new chat; update it when project decisions change.
+- Preserve source information for content so it can be retrieved and cited.
+- Run checks appropriate to the changes. Do not claim to have run the application or an API unless you actually did.
+- When evaluating RAG, check retrieval separately from generation.
+- Do not commit API keys, `.env`, private data, vector stores, or large outputs. Do not modify third-party code just to hide errors.

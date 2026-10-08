@@ -1,9 +1,15 @@
-# Bối cảnh dự án
+# Project context
 
-- Sản phẩm: RAG Study Buddy, ứng dụng chat trả lời dựa trên tài liệu được cung cấp, kèm nguồn và bằng chứng; nói rõ khi tài liệu không đủ thông tin.
+- Product: RAG Study Buddy, a chat application that answers based on provided documents, with sources and evidence; it clearly states when the documents do not contain enough information.
 - Repo: https://github.com/nhbl-ai/rag-study-buddy
-- Repo được tạo private; chưa có yêu cầu chuyển public.
-- Người dùng tự code và build, tự chọn tài liệu và công nghệ. Chỉ hỗ trợ theo yêu cầu cụ thể.
-- `langchain-ai/rag-from-scratch` là tài liệu tham khảo tùy chọn.
-- Chưa triển khai ingestion, retrieval, generation hoặc giao diện; chưa chọn dependencies, model hay vector store.
-- Đã tinh gọn repo ngày 2026-10-03: bỏ lộ trình học, nhật ký thí nghiệm và các thư mục mẫu; giữ khung Python, README, hướng dẫn cộng tác và `.gitignore`.
+- The repository was created as private; there has been no request to make it public.
+- The user codes and builds the application themselves and chooses the documents and technologies. Help only with specific requests.
+- `langchain-ai/rag-from-scratch` is an optional reference.
+- A single-file RAG prototype in `src/rag_study_buddy/agent.py` loads LangChain documentation, preserves source URLs and chunk IDs, indexes chunks with `InMemoryVectorStore`, and delegates evidence analysis to a Deep Agents subagent. No application interface has been implemented. Live indexing, retrieval, and generation for the sample question were verified on 2026-10-08; this is not a comprehensive RAG quality evaluation.
+- The repository was simplified on 2026-10-03: the learning path, experiment log, and sample directories were removed; the Python scaffold, README, collaboration guidelines, and `.gitignore` were kept.
+- On 2026-10-05, repository text and application prompts were translated into English. The application is instructed to answer in English; collaboration chat remains in Vietnamese.
+- On 2026-10-05, the prototype switched from OpenAI to the Gemini Developer API using `langchain-google-genai`: `gemini-3.8-flash` for chat and `gemini-embedding-001` for embeddings. Both use `GEMINI_API_KEY`; LangSmith tracing remains disabled.
+- On 2026-10-08, Gemini key loading was fixed: `python-dotenv` reads the project-root `.env` regardless of the working directory, `GEMINI_API_KEY` falls back to `GOOGLE_API_KEY` or a hidden prompt, and empty keys are rejected before document loading. Both Gemini clients receive the same validated key.
+- On 2026-10-08, a live run confirmed an embedding RPM quota error (429; observed limit 100). Indexing now uses batches of at most 80 chunks with 65-second pauses, bounded retries, and a resumable JSON index in the ignored `data/processed/` directory. Cache identity includes the embedding model, document content, and source metadata; changed content is re-indexed. API metadata confirmed both configured Gemini models are available.
+- On 2026-10-08, UTF-8 stdout/stderr configuration fixed Unicode output errors on Windows. Gemini 3.8 Flash returned a live 503 overload error; a short request to Gemini 3.5 Flash-Lite succeeded, so it is now the default chat model. `GEMINI_CHAT_MODEL` can override it through `.env`. Chat requests have bounded timeouts/retries, and API 429/503 failures produce explicit failure messages. A full run reused all 322 cached chunks, retrieved relevant subagent documentation, and returned an English answer with a source link (exit code 0).
+- On 2026-10-08, version 0.1.0 was prepared for GitHub: a version marker, validated dependency versions, a safe `.env.example`, setup/run documentation, and initial release notes. The package initializer no longer prompts for an OpenAI key. Generated indexes and credentials remain excluded from Git.
