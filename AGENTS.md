@@ -1,5 +1,7 @@
 # Collaboration guidelines
 
+- Work only in `D:\Personal project\rag-study-buddy`. Do not create or use separate worktrees unless the user explicitly changes this instruction.
+
 - Goal: build a document chat application with citations and evidence.
 - The user codes and builds the application themselves. Help with specific requests; do not impose a learning path, exercises, or technology choices.
 - Communicate in Vietnamese. Use clear English names for variables, functions, and modules.
