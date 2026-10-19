@@ -1,13 +1,17 @@
 """Offline regression checks for the shared index and evidence stream."""
 
 import json
+import os
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from google.genai.errors import ClientError, ServerError
+import httpx
+from ollama import ResponseError
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
@@ -83,17 +87,18 @@ class IndexTests(unittest.TestCase):
         self.document = "\n\n".join(f"Section {i}: " + "x" * 900 for i in range(85))
         self.download = MagicMock()
         self.download.text = self.document
-        self.settings = rag.Settings("offline-test-key", source_urls=("https://example.com/docs",))
+        self.settings = rag.Settings(source_urls=("https://example.com/docs",))
         self.patches = [
             patch.object(rag.requests, "get", return_value=self.download),
-            patch.object(rag, "GoogleGenerativeAIEmbeddings", LocalEmbeddings),
+            patch.object(rag, "OllamaEmbeddings", LocalEmbeddings),
+            patch.object(rag, "check_ollama", return_value="embedding-digest-a"),
         ]
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
 
     def build(self):
-        return rag.build_index(self.settings, lambda text: None, cache_dir=self.cache, pause_seconds=0)
+        return rag.build_index(self.settings, lambda text: None, cache_dir=self.cache)
 
     def test_cache_reuse_and_content_invalidation(self):
         store, count = self.build()
@@ -123,11 +128,77 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(LocalEmbeddings.calls[0], 80)
         self.assertLess(LocalEmbeddings.calls[-1], 80)
 
-    def test_missing_key_and_empty_documents_fail_before_network(self):
-        for settings in [rag.Settings(""), rag.Settings("key", source_urls=())]:
-            with self.assertRaises(ValueError):
-                rag.build_index(settings, lambda text: None, cache_dir=self.cache)
+    def test_empty_documents_fail_before_network(self):
+        with self.assertRaises(ValueError):
+            rag.build_index(rag.Settings(source_urls=()), lambda text: None, cache_dir=self.cache)
         rag.requests.get.assert_not_called()
+        rag.check_ollama.assert_not_called()
+
+    def test_unavailable_ollama_fails_before_document_download(self):
+        rag.check_ollama.side_effect = ConnectionError("secret-connection-detail")
+        with self.assertRaises(ConnectionError):
+            self.build()
+        rag.requests.get.assert_not_called()
+
+    def test_embedding_changes_invalidate_cache_but_chat_changes_do_not(self):
+        self.build()
+        count = len(LocalEmbeddings.calls)
+        self.settings = replace(self.settings, chat_model="another-chat-model")
+        self.build()
+        self.assertEqual(len(LocalEmbeddings.calls), count)
+        rag.check_ollama.return_value = "embedding-digest-b"
+        self.build()
+        self.assertGreater(len(LocalEmbeddings.calls), count)
+        self.assertEqual(len(list(self.cache.glob("*.json"))), 2)
+        count = len(LocalEmbeddings.calls)
+        self.settings = replace(self.settings, embedding_model="another-embedding-model")
+        self.build()
+        self.assertGreater(len(LocalEmbeddings.calls), count)
+
+
+class OllamaTests(unittest.TestCase):
+    def test_settings_use_local_defaults_without_gemini_credentials(self):
+        with patch.object(rag, "load_dotenv"), patch.dict(os.environ, {"GEMINI_API_KEY": "unused"}, clear=True):
+            settings = rag.load_settings()
+        self.assertEqual(settings.base_url, "http://127.0.0.1:11434")
+        self.assertEqual(settings.embedding_model, rag.DEFAULT_EMBEDDING_MODEL)
+        self.assertEqual(settings.num_ctx, 8192)
+        with patch.object(rag, "load_dotenv"), patch.dict(os.environ, {"OLLAMA_NUM_CTX": "0"}):
+            with self.assertRaises(rag.OllamaSetupError):
+                rag.load_settings()
+
+    def test_chat_configuration_does_not_contact_server(self):
+        settings = rag.Settings(base_url="http://127.0.0.1:11435", num_ctx=4096, timeout_seconds=240)
+        with patch.object(rag, "ChatOllama") as chat:
+            session = rag.RagSession(settings, MagicMock(), 12)
+        self.assertIs(session.model, chat.return_value)
+        self.assertEqual(chat.call_args.kwargs["model"], settings.chat_model)
+        self.assertEqual(chat.call_args.kwargs["base_url"], settings.base_url)
+        self.assertEqual(chat.call_args.kwargs["num_ctx"], 4096)
+        self.assertEqual(chat.call_args.kwargs["client_kwargs"]["timeout"], 240)
+
+    def test_preflight_requires_downloaded_tool_and_embedding_models(self):
+        settings = rag.Settings()
+        with patch.object(rag, "Client") as client:
+            api = client.return_value
+            api.list.return_value.models = [
+                SimpleNamespace(model=settings.chat_model, digest="chat-digest"),
+                SimpleNamespace(model=settings.embedding_model, digest="embedding-digest"),
+            ]
+            api.show.side_effect = [SimpleNamespace(capabilities=["completion", "tools"]),
+                                    SimpleNamespace(capabilities=["embedding"])]
+            self.assertEqual(rag.check_ollama(settings), "embedding-digest")
+            api.show.side_effect = None
+            api.show.return_value.capabilities = ["completion"]
+            with self.assertRaisesRegex(rag.OllamaSetupError, "tool calling"):
+                rag.check_ollama(settings)
+            api.list.return_value.models = []
+            with self.assertRaisesRegex(rag.OllamaSetupError, "ollama pull"):
+                rag.check_ollama(settings)
+        with patch.object(rag, "Client") as client:
+            with self.assertRaisesRegex(rag.OllamaSetupError, "cloud"):
+                rag.check_ollama(replace(settings, chat_model="example:cloud"))
+            client.assert_not_called()
 
 
 class StreamTests(unittest.TestCase):
@@ -160,7 +231,10 @@ class StreamTests(unittest.TestCase):
             }]), {"langgraph_node": "model"})}
             yield {"ns": (), "type": "messages", "data": (AIMessageChunk(content="A subagent ", id="answer"), {"langgraph_node": "model"})}
             yield {"ns": (), "type": "messages", "data": (AIMessageChunk(content="handles a task. [1](#evidence-turn-a-1)", id="answer"), {"langgraph_node": "model"})}
-            yield {"ns": (), "type": "values", "data": {"messages": [AIMessage(content="A subagent handles a task. [1](#evidence-turn-a-1)")]}}
+            yield {"ns": (), "type": "values", "data": {"messages": [
+                AIMessage(content="", tool_calls=[{"name": "task", "args": {"subagent_type": "evidence-analyst"}, "id": "task-check"}]),
+                AIMessage(content="A subagent handles a task. [1](#evidence-turn-a-1)")
+            ]}}
 
         graph.stream.side_effect = stream
         return graph
@@ -183,8 +257,11 @@ class StreamTests(unittest.TestCase):
 
     def test_error_messages_hide_sensitive_sdk_details(self):
         for error, expected in [
-            (ClientError(429, {"error": {"message": "secret-sdk-detail"}}), "quota"),
-            (ServerError(503, {"error": {"message": "secret-sdk-detail"}}), "overloaded"),
+            (ResponseError("secret-sdk-detail", status_code=503), "busy"),
+            (ResponseError("secret-sdk-detail", status_code=404), "not found"),
+            (ResponseError("secret-sdk-detail", status_code=500), "RAM/VRAM"),
+            (ConnectionError("secret-sdk-detail"), "Cannot connect"),
+            (httpx.ReadTimeout("secret-sdk-detail"), "timed out"),
             (RuntimeError("secret-sdk-detail"), "could not be completed"),
         ]:
             wrapped = RuntimeError("outer")
@@ -192,6 +269,34 @@ class StreamTests(unittest.TestCase):
             text = rag.describe_error(wrapped)
             self.assertIn(expected, text)
             self.assertNotIn("secret-sdk-detail", text)
+
+    def test_model_cannot_complete_without_retrieval_or_delegation(self):
+        for retrieved in (False, True):
+            def factory(**kwargs):
+                graph = MagicMock()
+                def stream(*args, **options):
+                    if retrieved:
+                        kwargs["tools"][0].invoke({"query": "subagents"})
+                    yield {"ns": (), "type": "values", "data": {"messages": [AIMessage(content="Unsupported answer")]}}
+                graph.stream.side_effect = stream
+                return graph
+            with patch.object(rag, "StateBackend"), patch.object(rag, "create_deep_agent", side_effect=factory):
+                with self.assertRaisesRegex(rag.RagFlowError, "skipped"):
+                    list(self.session.stream_answer("What is a subagent?"))
+
+    def test_empty_retrieval_can_report_insufficient_information(self):
+        self.store.similarity_search.return_value = []
+        def factory(**kwargs):
+            graph = MagicMock()
+            def stream(*args, **options):
+                self.assertEqual(json.loads(kwargs["tools"][0].invoke({"query": "missing topic"})), [])
+                yield {"ns": (), "type": "values", "data": {"messages": [AIMessage(content="Insufficient information.")]}}
+            graph.stream.side_effect = stream
+            return graph
+        with patch.object(rag, "StateBackend"), patch.object(rag, "create_deep_agent", side_effect=factory):
+            final = list(self.session.stream_answer("Missing topic?"))[-1]
+        self.assertEqual(final["type"], "complete")
+        self.assertEqual(final["evidence"], [])
 
     def test_real_graph_can_read_evidence_and_delegate_without_network(self):
         self.session.model = OfflineAgentModel()

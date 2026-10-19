@@ -1,4 +1,4 @@
-"""Exercise Streamlit chat, evidence selection and failures without Gemini calls."""
+"""Exercise Streamlit chat, evidence selection and failures without Ollama calls."""
 
 import unittest
 from pathlib import Path
@@ -30,12 +30,12 @@ class OfflineSession:
 class UiTests(unittest.TestCase):
     def setUp(self):
         self.session = OfflineSession()
-        self.key = "offline-test-key"
+        self.chat_model = "offline-chat-model"
         self.prepare = patch("src.rag_study_buddy.rag.RagSession.prepare", return_value=self.session).start()
         self.addCleanup(patch.stopall)
 
-        def settings(api_key="", source_urls=None):
-            return Settings(api_key or self.key, source_urls=tuple(source_urls))
+        def settings(source_urls=None):
+            return Settings(chat_model=self.chat_model, source_urls=tuple(source_urls))
 
         patch("src.rag_study_buddy.rag.load_settings", side_effect=settings).start()
         self.app = AppTest.from_file(
@@ -49,14 +49,21 @@ class UiTests(unittest.TestCase):
         self.app.chat_input[0].set_value(question).run()
         self.assert_no_errors()
 
-    def test_initial_render_has_no_network_and_missing_key_disables_input(self):
+    def test_initial_render_needs_no_api_key_and_does_not_contact_ollama(self):
         self.assert_no_errors()
         self.prepare.assert_not_called()
         self.assertEqual(len(self.app.chat_input), 1)
-        self.key = ""
-        self.app.run()
-        self.assertTrue(self.app.chat_input[0].disabled)
-        self.assertTrue(self.app.button(key="prepare").disabled)
+        self.assertFalse(self.app.chat_input[0].disabled)
+        self.assertFalse(self.app.button(key="prepare").disabled)
+        self.assertEqual(len(self.app.text_input), 0)
+
+    def test_invalid_configuration_shows_safe_error_without_network(self):
+        from src.rag_study_buddy.rag import OllamaSetupError
+        with patch("src.rag_study_buddy.rag.load_settings", side_effect=OllamaSetupError("OLLAMA_NUM_CTX must be positive.")):
+            self.app.run()
+        self.assert_no_errors()
+        self.assertIn("OLLAMA_NUM_CTX", self.app.error[0].value)
+        self.prepare.assert_not_called()
 
     def test_chat_reuses_session_and_selects_evidence_for_each_turn(self):
         self.ask("What is a subagent?")
@@ -86,6 +93,14 @@ class UiTests(unittest.TestCase):
         self.assertIsNone(self.app.session_state["rag_session"])
         self.app.multiselect(key="documents").set_value([]).run()
         self.assertTrue(self.app.chat_input[0].disabled)
+
+    def test_model_change_resets_prepared_service_and_conversation(self):
+        self.ask("First question")
+        self.chat_model = "new-chat-model"
+        self.app.run()
+        self.assert_no_errors()
+        self.assertEqual(self.app.session_state["turns"], [])
+        self.assertIsNone(self.app.session_state["rag_session"])
 
     def test_generation_failure_retains_evidence_and_allows_retry(self):
         self.session.fail = True
