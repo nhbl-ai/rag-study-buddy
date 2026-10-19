@@ -129,6 +129,8 @@ Tests separate indexing/retrieval metadata and cache behavior from graph/generat
 
 The [initial five-user CPU+iGPU burst](docs/ollama-concurrency-validation.md) returned four accepted responses and one timeout. The [tuned profile with application admission](docs/ollama-hybrid-tuning.md) completed all five workflows without timeout in 641.89s, with 20 subagents/reads and 19 valid citation links; individual waits were about 6.1–10.7 minutes. One comparison answer still needs semantic revision despite valid citations. All 28 offline tests passed. These measurements do not establish responsive multi-user capacity.
 
+A [dedicated single-user CPU+iGPU run](docs/ollama-hybrid-single-user.md) completed the primary question in **119.14s**, with four subagents/reads and three valid citation links. Saved-index/model preparation added **12.32s**; the measured total was **131.46s**, excluding downloads and fresh indexing. This is one run with the selected eight-layer Intel profile.
+
 The historical 2026-10-08 Gemini terminal validation and 0.1.3 synthetic browser checks remain documented in project context; they are not evidence of live Ollama quality. Broader retrieval, citation grounding and concurrent load evaluation remain necessary.
 
 ## Structure
