@@ -38,3 +38,25 @@ Qwen3 4B instruct, Qwen3 4B and Qwen3 8B trials returned an answer without calli
 An additional streaming question with Qwen3.5 4B also retrieved and read evidence on the coordinator rather than delegating. Model capability checks therefore establish API support, not reliable compliance. The 8B trial also spilled onto CPU (observed 37% CPU / 63% GPU in `ollama ps`). Qwen3.5 4B and the embedding model were observed fully GPU-loaded together. Sampling now follows model defaults; Qwen advises against greedy decoding in its [model documentation](https://huggingface.co/Qwen/Qwen3-8B).
 
 This evaluation does not establish answer quality, citation completeness, or capacity for concurrent users. Source downloads still require Internet access. Local diagnostics and generated indexes remain ignored by Git.
+
+## Integrated GPU and CPU comparison
+
+The user requested a test without the discrete GPU. A separate server on localhost:11435 enabled Intel UHD through Vulkan, using `OLLAMA_IGPU_ENABLE=1`, `OLLAMA_VULKAN=1`, `GGML_VK_VISIBLE_DEVICES=0`, and `CUDA_VISIBLE_DEVICES=-1`. Vulkan index 0 was verified as Intel RaptorLake-S Mobile Graphics Controller on this machine; indices must be verified on another machine. Intel driver: 32.0.101.7026. The main server configuration was not changed.
+
+The Intel device was detected as an iGPU. Logs confirmed all 33/33 Qwen3.5 layers offloaded to Intel Vulkan; `/api/ps` reported the full loaded model size in `size_vram`. RTX utilization stayed at 0% during that test. The approximately 7.9 GiB reported for Intel is shared system memory, not dedicated VRAM.
+
+All chat trials used Qwen3.5 4B Q4_K_M, an 8192-token context, the same 80-token evidence prompt, thinking disabled, model-default sampling, and an output limit of 96 tokens. The table records one warm request per device, immediately following a cold request. Prefix caching can help these repeated prompts; output lengths vary because sampling is not fixed. Tokens/second is decode speed; wall time includes request/prefill overhead. This is a short inference probe, not an end-to-end RAG or load benchmark.
+
+| Device | Decode tokens/s | Warm request seconds | Output tokens |
+|---|---:|---:|---:|
+| RTX 4050 Laptop | 49.09 | 1.35 | 61 |
+| i7-13650HX CPU-only | 10.20 | 6.15 | 61 |
+| Intel UHD via Vulkan | 3.72 | 19.35 | 69 |
+
+Cold chat requests took about 31.23 seconds on Intel, 11.99 seconds on CPU, and 7.81 seconds on RTX, including model loading. CPU-only was explicitly selected with `num_gpu=0`; `/api/ps` reported `size_vram=0`. Models were unloaded between device comparisons.
+
+EmbeddingGemma also worked on Intel: the first single-vector request took 7.56 seconds including load; a warm four-passage batch took 0.48 seconds and returned four 768-dimensional vectors. These were short synthetic public passages, not the full document corpus.
+
+The lowest sampled free physical RAM during the Intel chat cold request was about 0.89 GiB. RAM measurements reflect other applications running on the machine as well. CPU-only was roughly 2.7 times faster than Intel UHD in this probe; the result must not be generalized to every CPU or integrated GPU. On a similar machine without a discrete GPU, CPU-only is a practical starting point. The existing agent/delegation quality limitations remain separate from hardware feasibility.
+
+The temporary iGPU server was stopped after testing; the application remains on the normal localhost:11434 server. Raw logs and measurements are kept in ignored `work/igpu-bench/`. No drivers or global GPU settings were changed. [Ollama hardware documentation](https://docs.ollama.com/gpu) describes Vulkan device selection.
