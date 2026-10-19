@@ -1,13 +1,13 @@
 # RAG Study Buddy
 
-The working branch migrates the 0.1.3 application to local Ollama chat and embeddings. The RAG flow is unchanged: retrieve passages, delegate evidence reading to a subagent, then stream an English answer with citations.
+The `feat-ollama` branch runs the 0.1.3 application with local Ollama chat and embeddings. Code enforces retrieval, isolated evidence subagent execution, and citation validation before publishing an English answer.
 
 ## What it does
 
 - Selects three LangChain documentation pages, splits text, and preserves source URLs and chunk IDs.
 - Uses `embeddinggemma:300m` with `InMemoryVectorStore` and a resumable disk index.
 - Uses `qwen3.5:4b` for both coordinator and evidence-analysis subagent.
-- Shows Question:/Answer: labels, streaming, citation popovers and the retrieved evidence for each turn.
+- Shows Question:/Answer: labels, progress updates, citation popovers and the retrieved evidence for each turn. Unchecked answer drafts and private analyst output are never displayed.
 - Keeps up to six recent successful turns; conversation and evidence are isolated per browser session.
 - Requires no Gemini key. Existing Gemini variables in `.env` are ignored. LangSmith tracing is disabled.
 
@@ -50,7 +50,7 @@ OLLAMA_NUM_CTX=8192
 OLLAMA_TIMEOUT_SECONDS=180
 ```
 
-The chat model must support tool calling; the embedding model must support embeddings. Sampling uses the model defaults rather than forcing greedy decoding. Preparation checks downloaded models and their capabilities before downloading documents. Model downloads are explicit; the application does not pull models automatically. Cloud model tags are rejected.
+The chat model must support text generation and Ollama JSON-schema output; the embedding model must support embeddings. Tool selection is controlled by application code. Chat uses `reasoning=False` and an output limit of 1024 tokens per call; sampling otherwise uses model defaults. Preparation checks downloaded models and their capabilities before downloading documents. Model downloads are explicit; the application does not pull models automatically. Cloud model tags are rejected.
 
 8192 tokens is a starting context size for the existing agent flow, not a promise that all conversations fit. Longer context increases memory use. Close heavy applications on a 16 GB RAM machine; use `ollama ps` to inspect GPU offloading. No fixed concurrency capacity is claimed for the laptop.
 
@@ -76,7 +76,9 @@ It prints indexing progress, retrieved passages, and an answer to the existing s
 
 Indexing saves each batch of at most 80 passages, with no Gemini quota pauses. A failed batch leaves previous batches available for resuming. Cache identity includes provider, endpoint, embedding model and its digest, content, and source metadata. Ollama never reuses Gemini vectors. Changing only the chat model does not require re-embedding. Existing Gemini indexes remain untouched.
 
-The original graph and prompts are retained. A completion check rejects a model response if it skipped retrieval, or skipped evidence-analyst delegation after finding passages. This detects skipped steps; it does not verify every answer claim or citation.
+The coordinator now follows fixed steps instead of letting the model decide whether to call tools. `search_documents` retrieves up to four passages, retaining URLs and chunk IDs. Every distinct passage is assigned sequentially through the real Deep Agents `task` tool to an isolated `evidence-analyst` LangGraph subgraph. The subgraph reads its assigned in-memory file before asking the model to select numbered source spans. Code extracts the selected spans verbatim; the model does not retype quotations. Only selected spans reach synthesis.
+
+Synthesis returns structured claims referencing one unique `quote_id` per supporting quote. Its JSON schema enumerates only IDs actually supplied to synthesis. The application rejects unknown evidence, unverified quotes, missing support and model-written citation links, then renders canonical numbered links itself. These checks verify provenance and citation structure; semantic support still needs evaluation. Empty or irrelevant evidence produces an explicit insufficient-information answer. A failed subagent stops synthesis. Answers appear after validation rather than token by token; progress and evidence events remain available.
 
 Chat and embeddings are local, but preparation still downloads the three public documentation pages, including when reusing an index. This version is not completely offline. Authentication, uploads, persistent chats, and deployment for concurrent users have not been added.
 
@@ -85,9 +87,10 @@ Chat and embeddings are local, but preparation still downloads the three public 
 ```text
 Load settings -> Check Ollama models -> Download documents -> Split text
               -> Load or build Ollama vector index
-              -> Main agent searches for evidence
-              -> Evidence subagent reads retrieved files
-              -> Main agent streams an answer with numbered citations
+              -> Required search_documents retrieval (top 4)
+              -> Required task -> isolated evidence-analyst -> read_file -> exact quotes
+              -> Structured answer claims -> validate quotes and evidence IDs
+              -> Render canonical citations -> publish complete answer
               -> UI shows the retrieved passages for this turn
 ```
 
@@ -99,7 +102,7 @@ Run offline regression checks without a model server or API key:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Tests separate indexing/retrieval metadata and cache behavior from graph/generation and UI behavior. They exercise the real graph's delegation and file tools using a fake model, plus streaming, history, citations, service failures, and configuration changes. Passing them does not establish the local model's answer quality. Live Ollama validation is recorded in `docs/ollama-validation.md`. The migration is an evaluation baseline: live embeddings and retrieval passed, but the tested local models have skipped required agent steps. The application reports that failure instead of accepting it as a completed RAG answer. End-to-end generation is not yet validated.
+Tests separate indexing/retrieval metadata and cache behavior from graph/generation and UI behavior. They exercise the real Deep Agents task tool and mandatory file-reading subgraph using a fake model, plus history, citation validation, safe failures, and UI configuration changes. Passing them does not establish the local model's answer quality. Historical skipped-step failures and the subsequent CPU-only rerun are recorded separately in `docs/ollama-validation.md`.
 
 The historical 2026-10-08 Gemini terminal validation and 0.1.3 synthetic browser checks remain documented in project context; they are not evidence of live Ollama quality. Broader retrieval, citation grounding and concurrent load evaluation remain necessary.
 

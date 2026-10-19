@@ -2,11 +2,13 @@
 
 ## [Unreleased]
 
-- Replace Gemini chat and embeddings with local Ollama while preserving the coordinator, evidence-analysis subagent, streaming and citation flow.
+- Replace Gemini chat and embeddings with local Ollama while retaining evidence-analysis subagents, progress events and the citation UI.
 - Add local model configuration and availability/capability checks; remove API-key prompts and Gemini quota waits.
 - Separate Ollama indexes by model digest and retain batch checkpoint/resume behavior.
 - Add a local-only Windows server helper and update offline regression checks.
-- Reject completed answers that skip retrieval or evidence-analysis delegation; document live model limitations separately from offline test results.
+- Enforce document retrieval and one real Deep Agents evidence-analysis task per distinct passage; each isolated subagent must read its file before model analysis.
+- Constrain span and quote IDs to actual evidence, validate structured claim support and citation IDs, then render canonical links before publishing the answer. Stop on invalid evidence instead of exposing unchecked drafts.
+- Use JSON-schema output with thinking disabled and a 1024-token output limit per call; retain progress/evidence events and record CPU-only validation separately from the original failed baseline.
 
 ## [0.1.3] - 2026-10-09
 

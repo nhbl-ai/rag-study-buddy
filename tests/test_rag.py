@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,9 +13,12 @@ import httpx
 from ollama import ResponseError
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.runnables import RunnableLambda
+from pydantic import Field
 
 from src.rag_study_buddy import rag
 
@@ -39,40 +41,50 @@ class LocalEmbeddings(Embeddings):
 
 
 class OfflineAgentModel(BaseChatModel):
-    """Exercise the real graph, delegation and file tools without a provider."""
+    """Fake provider; real task dispatch, subgraph and file access still execute."""
+    mode: str = "ok"
+    calls: list = Field(default_factory=list)
 
     @property
     def _llm_type(self):
-        return "offline-tool-model"
+        return "offline-structured-model"
 
-    def bind_tools(self, tools, **kwargs):
-        return self
+    def with_structured_output(self, schema, **kwargs):
+        if isinstance(schema, dict):
+            if "quote_numbers" in schema["properties"]:
+                assert schema["properties"]["quote_numbers"]["items"]["enum"]
+            else:
+                assert schema["$defs"]["ClaimSupport"]["properties"]["quote_id"]["enum"]
+            return self | RunnableLambda(lambda message: json.loads(message.content))
+        return self | RunnableLambda(lambda message: schema.model_validate_json(message.content))
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        last = messages[-1]
-        analyst = "You receive a question and the path" in messages[0].content
-        if analyst and not isinstance(last, ToolMessage):
-            path = re.search(r"/evidence/[^\s]+\.md", last.content).group()
-            response = AIMessage(content="", tool_calls=[{
-                "name": "read_file", "args": {"file_path": path}, "id": "read-1", "type": "tool_call",
-            }])
-        elif analyst:
-            citation = re.search(r"\[1\]\(#[^)]+\)", last.content).group()
-            response = AIMessage(content=f"ANALYST-ONLY: A subagent handles an isolated task. {citation}")
-        elif not isinstance(last, ToolMessage):
-            response = AIMessage(content="", tool_calls=[{
-                "name": "search_documents", "args": {"query": "subagents"}, "id": "search-1", "type": "tool_call",
-            }])
-        elif last.name == "search_documents":
-            path = json.loads(last.content)[0]["path"]
-            response = AIMessage(content="", tool_calls=[{
-                "name": "task", "args": {"subagent_type": "evidence-analyst", "description": f"What is a subagent? Read {path}"},
-                "id": "task-1", "type": "tool_call",
-            }])
+        payload = json.loads(messages[-1].content)
+        analyst = "You are evidence-analyst" in messages[0].content
+        self.calls.append({"analyst": analyst, "messages": messages, "payload": payload})
+        quote = "A subagent handles an isolated task."
+        if analyst:
+            quotes = [item["number"] for item in payload["passage_spans"] if item["text"] == quote]
+            if self.mode == "bad_quote":
+                quotes = [999]
+            elif self.mode == "no_quotes":
+                quotes = []
+            output = {"quote_numbers": quotes}
         else:
-            citation = re.search(r"\[1\]\(#[^)]+\)", last.content).group()
-            response = AIMessage(content=f"A subagent handles an isolated task. {citation}")
-        return ChatResult(generations=[ChatGeneration(message=response)])
+            output = {"claims": [{"text": "A subagent handles an isolated task.",
+                                  "supports": [{"quote_id": "e1q1"}]}], "insufficient": False}
+            if self.mode == "unknown_id":
+                output["claims"][0]["supports"][0]["quote_id"] = "e999q1"
+            elif self.mode == "wrong_support":
+                output["claims"][0]["supports"][0]["quote_id"] = "e1q999"
+            elif self.mode == "no_support":
+                output["claims"][0]["supports"] = []
+            elif self.mode == "forged_link":
+                output["claims"][0]["text"] += " [9](https://fake.example)"
+            elif self.mode == "no_claims":
+                output["claims"] = []
+        content = "invalid JSON" if self.mode == "invalid_json" else json.dumps(output)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
 
 
 class IndexTests(unittest.TestCase):
@@ -175,9 +187,11 @@ class OllamaTests(unittest.TestCase):
         self.assertEqual(chat.call_args.kwargs["model"], settings.chat_model)
         self.assertEqual(chat.call_args.kwargs["base_url"], settings.base_url)
         self.assertEqual(chat.call_args.kwargs["num_ctx"], 4096)
+        self.assertIs(chat.call_args.kwargs["reasoning"], False)
+        self.assertEqual(chat.call_args.kwargs["num_predict"], 1024)
         self.assertEqual(chat.call_args.kwargs["client_kwargs"]["timeout"], 240)
 
-    def test_preflight_requires_downloaded_tool_and_embedding_models(self):
+    def test_preflight_requires_downloaded_completion_and_embedding_models(self):
         settings = rag.Settings()
         with patch.object(rag, "Client") as client:
             api = client.return_value
@@ -189,8 +203,8 @@ class OllamaTests(unittest.TestCase):
                                     SimpleNamespace(capabilities=["embedding"])]
             self.assertEqual(rag.check_ollama(settings), "embedding-digest")
             api.show.side_effect = None
-            api.show.return_value.capabilities = ["completion"]
-            with self.assertRaisesRegex(rag.OllamaSetupError, "tool calling"):
+            api.show.return_value.capabilities = ["embedding"]
+            with self.assertRaisesRegex(rag.OllamaSetupError, "text generation"):
                 rag.check_ollama(settings)
             api.list.return_value.models = []
             with self.assertRaisesRegex(rag.OllamaSetupError, "ollama pull"):
@@ -201,59 +215,100 @@ class OllamaTests(unittest.TestCase):
             client.assert_not_called()
 
 
+class ToolRecorder(BaseCallbackHandler):
+    def __init__(self):
+        self.tools = []
+
+    def on_tool_start(self, serialized, input_str, **kwargs):
+        self.tools.append((serialized["name"], input_str, kwargs.get("metadata", {})))
+
+
 class StreamTests(unittest.TestCase):
     def setUp(self):
         self.store = MagicMock()
-        self.store.similarity_search.return_value = [
-            Document(page_content="A subagent handles an isolated task.",
-                     metadata={"source": "https://example.com/subagents", "chunk_id": 7}),
-        ]
+        self.document = Document(page_content="A subagent handles an isolated task.",
+                                 metadata={"source": "https://example.com/subagents", "chunk_id": 7})
+        self.store.similarity_search.return_value = [self.document]
         self.session = rag.RagSession.__new__(rag.RagSession)
-        self.session.model = MagicMock()
+        self.session.model = OfflineAgentModel()
         self.session.vector_store = self.store
 
-    def graph_factory(self, **kwargs):
-        search = kwargs["tools"][0]
-        graph = MagicMock()
-
-        def stream(state, **options):
-            self.received_history = state["messages"]
-            manifest = json.loads(search.invoke({"query": "subagents"}))
-            self.assertEqual(manifest[0]["chunk_id"], 7)
-            self.assertEqual(manifest[0]["citation"], "[1](#evidence-turn-a-1)")
-            # A repeated search must keep the same citation and deduplicate passages.
-            search.invoke({"query": "isolated tasks"})
-            self.assertEqual(options["version"], "v2")
-            yield {"ns": ("tools:analyst",), "type": "messages", "data": (AIMessageChunk(content="private analysis"), {"langgraph_node": "model"})}
-            yield {"ns": (), "type": "messages", "data": (AIMessageChunk(content="Tool preamble", id="tool-message"), {"langgraph_node": "model"})}
-            yield {"ns": (), "type": "messages", "data": (AIMessageChunk(content="", id="tool-message", tool_call_chunks=[{
-                "name": "search_documents", "args": "{}", "id": "call-1", "index": 0,
-            }]), {"langgraph_node": "model"})}
-            yield {"ns": (), "type": "messages", "data": (AIMessageChunk(content="A subagent ", id="answer"), {"langgraph_node": "model"})}
-            yield {"ns": (), "type": "messages", "data": (AIMessageChunk(content="handles a task. [1](#evidence-turn-a-1)", id="answer"), {"langgraph_node": "model"})}
-            yield {"ns": (), "type": "values", "data": {"messages": [
-                AIMessage(content="", tool_calls=[{"name": "task", "args": {"subagent_type": "evidence-analyst"}, "id": "task-check"}]),
-                AIMessage(content="A subagent handles a task. [1](#evidence-turn-a-1)")
-            ]}}
-
-        graph.stream.side_effect = stream
-        return graph
-
-    def test_actual_retrieved_evidence_and_only_coordinator_stream(self):
-        with patch.object(rag, "StateBackend") as backend, patch.object(rag, "create_deep_agent", side_effect=self.graph_factory):
-            events = list(self.session.stream_answer(
-                "Explain it", [{"role": "user", "content": "What is a subagent?"}], turn_id="turn-a",
-            ))
+    def test_real_deepagents_task_reads_each_file_before_analysis(self):
+        self.store.similarity_search.return_value = [self.document, self.document, Document(
+            page_content="Other information.", metadata={"source": "https://example.com/other", "chunk_id": 8})]
+        recorder = ToolRecorder()
+        history = [{"role": "user", "content": "What is a subagent?"},
+                   {"role": "assistant", "content": "Previous answer is not evidence."}]
+        events = list(self.session.stream_answer("When should I use it?", history,
+                                                turn_id="turn-a", config={"callbacks": [recorder]}))
         final = events[-1]
         self.assertEqual(final["type"], "complete")
-        self.assertEqual(len(final["evidence"]), 1)
+        self.assertEqual(len(final["evidence"]), 2)
         self.assertEqual(final["evidence"][0].chunk_id, 7)
-        self.assertEqual(final["evidence"][0].text, self.store.similarity_search.return_value[0].page_content)
-        self.assertEqual(self.received_history[-1]["content"], "Explain it")
-        self.assertEqual(backend.return_value.upload_files.call_count, 2)
-        self.assertNotIn("private analysis", str(events))
-        self.assertIn({"type": "draft", "text": ""}, events)
+        self.assertEqual(final["evidence"][0].text, self.document.page_content)
+        self.assertEqual(final["text"], "A subagent handles an isolated task. [1](#evidence-turn-a-1)")
+        self.assertEqual([item[0] for item in recorder.tools], ["search_documents", "task", "read_file", "task", "read_file"])
+        for name, inputs, metadata in recorder.tools:
+            if name == "task":
+                self.assertIn("evidence-analyst", inputs)
+            if name == "read_file":
+                self.assertTrue(metadata.get("langgraph_checkpoint_ns"))
+        calls = self.session.model.calls
+        self.assertEqual([call["analyst"] for call in calls], [True, True, False])
+        self.assertEqual(calls[0]["payload"]["passage_spans"][0]["text"], self.document.page_content)
+        self.assertEqual(calls[1]["payload"]["passage_spans"][0]["text"], "Other information.")
+        self.assertNotIn("Previous answer", str(calls[0]["payload"]))
+        self.assertIn("Previous answer", str(calls[-1]["messages"]))
+        self.assertIn("What is a subagent?", self.store.similarity_search.call_args.args[0])
         self.assertTrue(any(event["type"] == "evidence" for event in events))
+        self.assertFalse(any(event["type"] == "draft" for event in events))
+        self.assertNotIn("quotes", str(events))
+
+    def test_invalid_quotes_and_citations_never_complete_or_publish_drafts(self):
+        for mode in ("bad_quote", "unknown_id", "wrong_support", "no_support", "forged_link", "no_claims", "invalid_json"):
+            with self.subTest(mode=mode):
+                self.session.model = OfflineAgentModel(mode=mode)
+                events = []
+                with self.assertRaises(rag.RagFlowError):
+                    for event in self.session.stream_answer("What is a subagent?"):
+                        events.append(event)
+                self.assertTrue(any(event["type"] == "evidence" for event in events))
+                self.assertFalse(any(event["type"] in ("complete", "draft") for event in events))
+
+    def test_no_evidence_or_relevance_returns_explicit_abstention(self):
+        self.store.similarity_search.return_value = []
+        final = list(self.session.stream_answer("Missing topic?"))[-1]
+        self.assertEqual(final["text"], rag.INSUFFICIENT_ANSWER)
+        self.assertEqual(final["evidence"], [])
+        self.assertEqual(self.session.model.calls, [])
+        self.store.similarity_search.return_value = [self.document]
+        self.session.model = OfflineAgentModel(mode="no_quotes")
+        final = list(self.session.stream_answer("Missing topic?"))[-1]
+        self.assertEqual(final["text"], rag.INSUFFICIENT_ANSWER)
+        self.assertEqual(len(self.session.model.calls), 1)
+
+    def test_analysis_failure_stops_synthesis(self):
+        self.session.model = OfflineAgentModel(mode="bad_quote")
+        with self.assertRaises(rag.RagFlowError):
+            list(self.session.stream_answer("Explain subagents"))
+        self.assertEqual(len(self.session.model.calls), 1)
+        self.assertTrue(self.session.model.calls[0]["analyst"])
+
+    def test_unreadable_evidence_stops_before_model_generation(self):
+        from deepagents.backends.protocol import FileDownloadResponse
+        with patch.object(rag.StateBackend, "download_files", return_value=[
+            FileDownloadResponse(path="/missing", content=None, error="file_not_found"),
+        ]):
+            with self.assertRaisesRegex(rag.RagFlowError, "could not be read"):
+                list(self.session.stream_answer("What is a subagent?"))
+        self.assertEqual(self.session.model.calls, [])
+
+    def test_turns_never_reuse_old_citation_anchors(self):
+        first = list(self.session.stream_answer("What is a subagent?", turn_id="one"))[-1]
+        second = list(self.session.stream_answer("What is a subagent?", turn_id="two"))[-1]
+        self.assertIn("#evidence-one-1", first["text"])
+        self.assertIn("#evidence-two-1", second["text"])
+        self.assertNotIn("#evidence-one-1", second["text"])
 
     def test_error_messages_hide_sensitive_sdk_details(self):
         for error, expected in [
@@ -269,42 +324,6 @@ class StreamTests(unittest.TestCase):
             text = rag.describe_error(wrapped)
             self.assertIn(expected, text)
             self.assertNotIn("secret-sdk-detail", text)
-
-    def test_model_cannot_complete_without_retrieval_or_delegation(self):
-        for retrieved in (False, True):
-            def factory(**kwargs):
-                graph = MagicMock()
-                def stream(*args, **options):
-                    if retrieved:
-                        kwargs["tools"][0].invoke({"query": "subagents"})
-                    yield {"ns": (), "type": "values", "data": {"messages": [AIMessage(content="Unsupported answer")]}}
-                graph.stream.side_effect = stream
-                return graph
-            with patch.object(rag, "StateBackend"), patch.object(rag, "create_deep_agent", side_effect=factory):
-                with self.assertRaisesRegex(rag.RagFlowError, "skipped"):
-                    list(self.session.stream_answer("What is a subagent?"))
-
-    def test_empty_retrieval_can_report_insufficient_information(self):
-        self.store.similarity_search.return_value = []
-        def factory(**kwargs):
-            graph = MagicMock()
-            def stream(*args, **options):
-                self.assertEqual(json.loads(kwargs["tools"][0].invoke({"query": "missing topic"})), [])
-                yield {"ns": (), "type": "values", "data": {"messages": [AIMessage(content="Insufficient information.")]}}
-            graph.stream.side_effect = stream
-            return graph
-        with patch.object(rag, "StateBackend"), patch.object(rag, "create_deep_agent", side_effect=factory):
-            final = list(self.session.stream_answer("Missing topic?"))[-1]
-        self.assertEqual(final["type"], "complete")
-        self.assertEqual(final["evidence"], [])
-
-    def test_real_graph_can_read_evidence_and_delegate_without_network(self):
-        self.session.model = OfflineAgentModel()
-        events = list(self.session.stream_answer("What is a subagent?", turn_id="integration"))
-        self.assertEqual(events[-1]["type"], "complete")
-        self.assertIn("[1](#evidence-integration-1)", events[-1]["text"])
-        self.assertEqual(len(events[-1]["evidence"]), 1)
-        self.assertNotIn("ANALYST-ONLY", str(events))
 
 
 if __name__ == "__main__":
