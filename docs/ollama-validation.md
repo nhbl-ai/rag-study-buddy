@@ -60,3 +60,29 @@ EmbeddingGemma also worked on Intel: the first single-vector request took 7.56 s
 The lowest sampled free physical RAM during the Intel chat cold request was about 0.89 GiB. RAM measurements reflect other applications running on the machine as well. CPU-only was roughly 2.7 times faster than Intel UHD in this probe; the result must not be generalized to every CPU or integrated GPU. On a similar machine without a discrete GPU, CPU-only is a practical starting point. The existing agent/delegation quality limitations remain separate from hardware feasibility.
 
 The temporary iGPU server was stopped after testing; the application remains on the normal localhost:11434 server. Raw logs and measurements are kept in ignored `work/igpu-bench/`. No drivers or global GPU settings were changed. [Ollama hardware documentation](https://docs.ollama.com/gpu) describes Vulkan device selection.
+
+## Full RAG on CPU-only
+
+On 2026-10-19, the user requested a full CPU-only RAG run, including subagent and citation checks. A separate server at localhost:11436 disabled both CUDA and Vulkan. Both EmbeddingGemma and Qwen3.5 were observed with `size_vram=0`; the main server configuration was unchanged.
+
+The test used the existing question, "What is a subagent, and when should I use one?", Qwen3.5 4B, EmbeddingGemma 300M, context 8192, timeout 180 seconds, empty history, model-default sampling and thinking. Thinking was not disabled as in the short hardware probes. Prompts, graph, tools and completion guard were unchanged; callbacks observed real tool execution and nested graph namespaces. A fresh ignored test cache ensured all 321 chunks were embedded on CPU.
+
+| Phase | Measured seconds |
+|---|---:|
+| Cold preparation: downloads, splitting and indexing 321 chunks | 64.77 |
+| Separate retrieval probe, top four passages | 0.035 |
+| RAG question processing until application rejection | 156.89 |
+| Preparation with the matching saved index, including downloads | 2.56 |
+
+| Required step | Observed |
+|---|---|
+| `search_documents` | 1 successful execution; four passages retained URLs and chunk IDs |
+| `task` to evidence-analyst | 0 executions |
+| Evidence-analyst model calls | 0 |
+| `read_file` | 4 successful executions, all in the coordinator namespace |
+| Numbered citation links in candidate answer | 0 |
+| Accepted application answer | No; `RagFlowError` rejected the skipped delegation |
+
+There were three coordinator model calls, taking approximately 49.38, 39.46 and 67.78 seconds. The candidate answer explained subagents but contained no citation links or source URLs. It was a rejected candidate, not a completed RAG answer. This is a failed workflow/citation check, even though indexing, retrieval and CPU inference executed successfully.
+
+The lowest sampled free physical RAM was 0.90 GiB; other running applications affect this value. No successful full-flow response time can be claimed from this run: 156.89 seconds is time to rejection and includes no evidence-analysis subagent work. The result is one question, not a reliability or concurrent-load evaluation. Raw measurements, callback trace, candidate text and retrieved passages are in ignored `work/cpu-rag-test/`. The temporary server was stopped after testing; application source and its normal GPU settings were not modified.
