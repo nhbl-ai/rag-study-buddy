@@ -45,6 +45,8 @@ class Settings:
     num_ctx: int = 8192
     timeout_seconds: float = 180
     source_urls: tuple[str, ...] = tuple(SOURCE_PAGES.values())
+    chat_gpu_layers: int | None = None
+    embedding_gpu_layers: int | None = None
 
 
 class OllamaSetupError(RuntimeError):
@@ -75,11 +77,22 @@ def load_settings(source_urls: Sequence[str] | None = None) -> Settings:
             raise ValueError
     except ValueError:
         raise OllamaSetupError("OLLAMA_NUM_CTX and OLLAMA_TIMEOUT_SECONDS must be positive numbers.") from None
+    gpu_layers = []
+    for name in ("OLLAMA_CHAT_GPU_LAYERS", "OLLAMA_EMBEDDING_GPU_LAYERS"):
+        value = os.getenv(name, "").strip()
+        try:
+            layers = int(value) if value else None
+            if layers is not None and layers < 0:
+                raise ValueError
+        except ValueError:
+            raise OllamaSetupError(f"{name} must be blank for automatic placement or a non-negative integer.") from None
+        gpu_layers.append(layers)
     return Settings(
         base_url=os.getenv("OLLAMA_BASE_URL", "").strip().rstrip("/") or DEFAULT_BASE_URL,
         chat_model=os.getenv("OLLAMA_CHAT_MODEL", "").strip() or DEFAULT_CHAT_MODEL,
         embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "").strip() or DEFAULT_EMBEDDING_MODEL,
         num_ctx=num_ctx, timeout_seconds=timeout,
+        chat_gpu_layers=gpu_layers[0], embedding_gpu_layers=gpu_layers[1],
         source_urls=tuple(SOURCE_PAGES.values()) if source_urls is None else tuple(source_urls),
     )
 
@@ -150,7 +163,7 @@ def build_index(
     for index, chunk in enumerate(chunks):
         chunk.metadata["chunk_id"] = index
     embeddings = OllamaEmbeddings(
-        model=settings.embedding_model, base_url=settings.base_url,
+        model=settings.embedding_model, base_url=settings.base_url, num_gpu=settings.embedding_gpu_layers,
         client_kwargs={"timeout": settings.timeout_seconds},
     )
     # Provider and digest separate Gemini indexes and invalidate replaced local models.
@@ -340,7 +353,7 @@ class RagSession:
         self.settings, self.vector_store, self.chunk_count = settings, vector_store, chunk_count
         self.model = ChatOllama(
             model=settings.chat_model, base_url=settings.base_url,
-            num_ctx=settings.num_ctx, reasoning=False, num_predict=1024,
+            num_ctx=settings.num_ctx, num_gpu=settings.chat_gpu_layers, reasoning=False, num_predict=1024,
             client_kwargs={"timeout": settings.timeout_seconds},
         )
 
