@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import BoundedSemaphore, Event
 from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
@@ -240,6 +242,61 @@ class OllamaTests(unittest.TestCase):
             client.assert_not_called()
 
 
+class InferenceQueueTests(unittest.TestCase):
+    def test_sessions_share_admission_by_endpoint_and_model(self):
+        settings = rag.Settings(base_url="http://queue-test:11434/", chat_model="test")
+        slot = rag._get_inference_slot(settings)
+        self.assertIs(slot, rag._get_inference_slot(replace(settings, base_url="http://queue-test:11434", chat_model="test:latest")))
+        self.assertIsNot(slot, rag._get_inference_slot(replace(settings, base_url="http://other-test:11434")))
+        self.assertIsNot(slot, rag._get_inference_slot(replace(settings, chat_model="other")))
+
+    def test_requests_wait_before_provider_call_and_failures_release_slot(self):
+        slot = BoundedSemaphore(1)
+        first_entered, second_started, second_entered, release = (Event() for _ in range(4))
+        first_model, second_model = MagicMock(), MagicMock()
+        original_config = {"metadata": {"user": "first"}}
+        configs = []
+
+        def first_invoke(messages, config):
+            configs.append(config)
+            first_entered.set()
+            if not release.wait(3):
+                raise TimeoutError("Test did not release first request")
+            return {"quote_numbers": [1]}
+
+        def second_invoke(messages, config):
+            configs.append(config)
+            second_entered.set()
+            return {"quote_numbers": [1]}
+
+        first_model.with_structured_output.return_value.invoke.side_effect = first_invoke
+        second_model.with_structured_output.return_value.invoke.side_effect = second_invoke
+
+        def second_request():
+            second_started.set()
+            return rag._structured(second_model, rag.QuoteSelection, [], None, inference_slot=slot)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(rag._structured, first_model, rag.QuoteSelection, [], original_config, inference_slot=slot)
+            try:
+                self.assertTrue(first_entered.wait(2))
+                second = pool.submit(second_request)
+                self.assertTrue(second_started.wait(2))
+                self.assertFalse(second_entered.wait(.1))
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=3).quote_numbers, [1])
+            self.assertEqual(second.result(timeout=3).quote_numbers, [1])
+        self.assertTrue(second_entered.is_set())
+        self.assertGreater(configs[1]["metadata"]["inference_slot_wait_seconds"], 0)
+        self.assertEqual(original_config, {"metadata": {"user": "first"}})
+        first_model.with_structured_output.return_value.invoke.side_effect = TimeoutError("Provider failure")
+        with self.assertRaises(TimeoutError):
+            rag._structured(first_model, rag.QuoteSelection, [], None, inference_slot=slot)
+        self.assertTrue(slot.acquire(blocking=False))
+        slot.release()
+
+
 class ToolRecorder(BaseCallbackHandler):
     def __init__(self):
         self.tools = []
@@ -256,6 +313,7 @@ class StreamTests(unittest.TestCase):
         self.store.similarity_search.return_value = [self.document]
         self.session = rag.RagSession.__new__(rag.RagSession)
         self.session.model = OfflineAgentModel()
+        self.session._inference_slot = BoundedSemaphore(1)
         self.session.vector_store = self.store
 
     def test_real_deepagents_task_reads_each_file_before_analysis(self):

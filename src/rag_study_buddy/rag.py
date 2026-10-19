@@ -5,6 +5,8 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from threading import BoundedSemaphore, Lock
+from time import monotonic
 from uuid import uuid4
 
 import httpx
@@ -47,6 +49,19 @@ class Settings:
     source_urls: tuple[str, ...] = tuple(SOURCE_PAGES.values())
     chat_gpu_layers: int | None = None
     embedding_gpu_layers: int | None = None
+
+
+# Qwen3.5 has one actual inference slot in the tested Ollama runtime.
+# Share admission across browser sessions, before opening a timed HTTP request.
+_INFERENCE_SLOTS: dict[tuple[str, str], BoundedSemaphore] = {}
+_INFERENCE_SLOTS_LOCK = Lock()
+
+
+def _get_inference_slot(settings: Settings) -> BoundedSemaphore:
+    model = settings.chat_model if ":" in settings.chat_model else f"{settings.chat_model}:latest"
+    key = (settings.base_url.rstrip("/"), model)
+    with _INFERENCE_SLOTS_LOCK:
+        return _INFERENCE_SLOTS.setdefault(key, BoundedSemaphore(1))
 
 
 class OllamaSetupError(RuntimeError):
@@ -255,15 +270,22 @@ class AnalystState(EvidenceState):
     structured_response: EvidenceAnalysis
 
 
-def _structured(model, schema, messages, config, *, format_schema=None):
+def _structured(model, schema, messages, config, *, inference_slot, format_schema=None):
     try:
-        result = model.with_structured_output(format_schema or schema, method="json_schema").invoke(messages, config=config)
+        queued_at = monotonic()
+        with inference_slot:
+            request_config = dict(config or {})
+            request_config["metadata"] = {
+                **(request_config.get("metadata") or {}),
+                "inference_slot_wait_seconds": monotonic() - queued_at,
+            }
+            result = model.with_structured_output(format_schema or schema, method="json_schema").invoke(messages, config=request_config)
         return schema.model_validate(result)
     except (ValidationError, OutputParserException, json.JSONDecodeError) as error:
         raise RagFlowError("The model returned invalid evidence or answer data. No answer was accepted; try again.") from error
 
 
-def _build_delegator(model, backend, question):
+def _build_delegator(model, backend, question, inference_slot):
     """Use the real Deep Agents task tool with a fixed read -> analyze subgraph."""
     @tool
     def read_file(file_path: str) -> str:
@@ -296,7 +318,7 @@ def _build_delegator(model, backend, question):
             {"role": "user", "content": json.dumps({"question": question, "passage_spans": [
                 {"number": number, "text": text} for number, text in enumerate(spans, 1)
             ]}, ensure_ascii=False)},
-        ], config, format_schema=format_schema)
+        ], config, inference_slot=inference_slot, format_schema=format_schema)
         if any(not 1 <= number <= len(spans) for number in selection.quote_numbers):
             raise RagFlowError("The subagent selected an unknown passage. No answer was accepted; try again.")
         analysis = EvidenceAnalysis(quotes=[spans[number - 1] for number in dict.fromkeys(selection.quote_numbers)])
@@ -351,6 +373,7 @@ class RagSession:
 
     def __init__(self, settings: Settings, vector_store: InMemoryVectorStore, chunk_count: int):
         self.settings, self.vector_store, self.chunk_count = settings, vector_store, chunk_count
+        self._inference_slot = _get_inference_slot(settings)
         self.model = ChatOllama(
             model=settings.chat_model, base_url=settings.base_url,
             num_ctx=settings.num_ctx, num_gpu=settings.chat_gpu_layers, reasoning=False, num_predict=1024,
@@ -401,7 +424,7 @@ class RagSession:
             yield {"type": "complete", "text": INSUFFICIENT_ANSWER, "evidence": []}
             return
 
-        delegator = _build_delegator(self.model, StateBackend(), context_question)
+        delegator = _build_delegator(self.model, StateBackend(), context_question, self._inference_slot)
         analyses = {}
         # Sequential jobs keep one inference slot and isolate every evidence file.
         for assignment in manifest:
@@ -432,7 +455,7 @@ class RagSession:
         format_schema["$defs"]["ClaimSupport"]["properties"]["quote_id"]["enum"] = [
             quote["quote_id"] for item in verified for quote in item["quotes"]
         ]
-        answer = _structured(self.model, CitedAnswer, messages, config, format_schema=format_schema)
+        answer = _structured(self.model, CitedAnswer, messages, config, inference_slot=self._inference_slot, format_schema=format_schema)
         text = _render_answer(answer, evidence, analyses)
         # Publish only after structural citation checks; never expose analyst output or unchecked drafts.
         yield {"type": "complete", "text": text, "evidence": list(evidence)}
