@@ -129,6 +129,15 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(len(list(self.cache.glob("*.json"))), 2)
         self.assertEqual(list(self.cache.glob("*.tmp")), [])
 
+    def test_embedding_placement_is_forwarded_without_rebuilding_vectors(self):
+        self.build()
+        count = len(LocalEmbeddings.calls)
+        self.settings = replace(self.settings, embedding_gpu_layers=0)
+        with patch.object(rag, "OllamaEmbeddings", wraps=LocalEmbeddings) as embeddings:
+            self.build()
+        self.assertEqual(embeddings.call_args.kwargs["num_gpu"], 0)
+        self.assertEqual(len(LocalEmbeddings.calls), count)
+
     def test_resume_after_second_batch_fails(self):
         LocalEmbeddings.fail_on_call = 2
         with self.assertRaises(RuntimeError):
@@ -175,18 +184,34 @@ class OllamaTests(unittest.TestCase):
         self.assertEqual(settings.base_url, "http://127.0.0.1:11434")
         self.assertEqual(settings.embedding_model, rag.DEFAULT_EMBEDDING_MODEL)
         self.assertEqual(settings.num_ctx, 8192)
+        self.assertIsNone(settings.chat_gpu_layers)
+        self.assertIsNone(settings.embedding_gpu_layers)
         with patch.object(rag, "load_dotenv"), patch.dict(os.environ, {"OLLAMA_NUM_CTX": "0"}):
             with self.assertRaises(rag.OllamaSetupError):
                 rag.load_settings()
 
+    def test_explicit_layer_settings_and_invalid_overrides(self):
+        for chat_value, embedding_value, expected in (("8", "0", (8, 0)), ("0", "", (0, None))):
+            with self.subTest(values=(chat_value, embedding_value)), patch.object(rag, "load_dotenv"), patch.dict(
+                os.environ, {"OLLAMA_CHAT_GPU_LAYERS": chat_value, "OLLAMA_EMBEDDING_GPU_LAYERS": embedding_value}, clear=True
+            ):
+                settings = rag.load_settings()
+                self.assertEqual((settings.chat_gpu_layers, settings.embedding_gpu_layers), expected)
+        for name in ("OLLAMA_CHAT_GPU_LAYERS", "OLLAMA_EMBEDDING_GPU_LAYERS"):
+            for value in ("-1", "1.5", "abc"):
+                with self.subTest(name=name, value=value), patch.object(rag, "load_dotenv"), patch.dict(os.environ, {name: value}, clear=True):
+                    with self.assertRaises(rag.OllamaSetupError):
+                        rag.load_settings()
+
     def test_chat_configuration_does_not_contact_server(self):
-        settings = rag.Settings(base_url="http://127.0.0.1:11435", num_ctx=4096, timeout_seconds=240)
+        settings = rag.Settings(base_url="http://127.0.0.1:11435", num_ctx=4096, timeout_seconds=240, chat_gpu_layers=8)
         with patch.object(rag, "ChatOllama") as chat:
             session = rag.RagSession(settings, MagicMock(), 12)
         self.assertIs(session.model, chat.return_value)
         self.assertEqual(chat.call_args.kwargs["model"], settings.chat_model)
         self.assertEqual(chat.call_args.kwargs["base_url"], settings.base_url)
         self.assertEqual(chat.call_args.kwargs["num_ctx"], 4096)
+        self.assertEqual(chat.call_args.kwargs["num_gpu"], 8)
         self.assertIs(chat.call_args.kwargs["reasoning"], False)
         self.assertEqual(chat.call_args.kwargs["num_predict"], 1024)
         self.assertEqual(chat.call_args.kwargs["client_kwargs"]["timeout"], 240)
