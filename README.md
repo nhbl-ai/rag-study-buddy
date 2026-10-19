@@ -104,6 +104,8 @@ Run offline regression checks without a model server or API key:
 
 Tests separate indexing/retrieval metadata and cache behavior from graph/generation and UI behavior. They exercise the real Deep Agents task tool and mandatory file-reading subgraph using a fake model, plus history, citation validation, safe failures, and UI configuration changes. Passing them does not establish the local model's answer quality. Historical skipped-step failures and the subsequent CPU-only rerun are recorded separately in `docs/ollama-validation.md`.
 
+A five-user CPU+iGPU burst is documented in [the concurrency report](docs/ollama-concurrency-validation.md): four accepted cited responses (one partial), one timeout, and about nine minutes for the batch under the tested configuration.
+
 The historical 2026-10-08 Gemini terminal validation and 0.1.3 synthetic browser checks remain documented in project context; they are not evidence of live Ollama quality. Broader retrieval, citation grounding and concurrent load evaluation remain necessary.
 
 ## Structure
