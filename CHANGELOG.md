@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+- Replace Gemini chat and embeddings with local Ollama while preserving the coordinator, evidence-analysis subagent, streaming and citation flow.
+- Add local model configuration and availability/capability checks; remove API-key prompts and Gemini quota waits.
+- Separate Ollama indexes by model digest and retain batch checkpoint/resume behavior.
+- Add a local-only Windows server helper and update offline regression checks.
+- Reject completed answers that skip retrieval or evidence-analysis delegation; document live model limitations separately from offline test results.
+
 ## [0.1.3] - 2026-10-09
 
 ### Added

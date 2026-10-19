@@ -1,26 +1,25 @@
 import json
 import os
-import time
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from threading import Lock
 from uuid import uuid4
 
+import httpx
 import requests
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from dotenv import load_dotenv
-from google.genai.errors import APIError, ClientError
-from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from ollama import Client, ResponseError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_PAGES = {
@@ -28,14 +27,27 @@ SOURCE_PAGES = {
     "Subagents": "https://docs.langchain.com/oss/python/deepagents/subagents",
     "Streaming": "https://docs.langchain.com/oss/python/deepagents/streaming",
 }
-DEFAULT_CHAT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_CHAT_MODEL = "qwen3.5:4b"
+DEFAULT_EMBEDDING_MODEL = "embeddinggemma:300m"
+DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 
 
 @dataclass(frozen=True)
 class Settings:
-    api_key: str = field(repr=False)
+    base_url: str = DEFAULT_BASE_URL
     chat_model: str = DEFAULT_CHAT_MODEL
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    num_ctx: int = 8192
+    timeout_seconds: float = 180
     source_urls: tuple[str, ...] = tuple(SOURCE_PAGES.values())
+
+
+class OllamaSetupError(RuntimeError):
+    """An actionable setup failure containing only application-owned text."""
+
+
+class RagFlowError(RuntimeError):
+    """The model skipped the required evidence workflow."""
 
 
 @dataclass(frozen=True)
@@ -47,16 +59,42 @@ class Evidence:
     anchor: str
 
 
-def load_settings(api_key: str = "", source_urls: Sequence[str] | None = None) -> Settings:
+def load_settings(source_urls: Sequence[str] | None = None) -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
-    key = api_key.strip() or os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    try:
+        num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+        timeout = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
+        if num_ctx <= 0 or not 0 < timeout < float("inf"):
+            raise ValueError
+    except ValueError:
+        raise OllamaSetupError("OLLAMA_NUM_CTX and OLLAMA_TIMEOUT_SECONDS must be positive numbers.") from None
     return Settings(
-        api_key=key,
-        chat_model=os.getenv("GEMINI_CHAT_MODEL", "").strip() or DEFAULT_CHAT_MODEL,
+        base_url=os.getenv("OLLAMA_BASE_URL", "").strip().rstrip("/") or DEFAULT_BASE_URL,
+        chat_model=os.getenv("OLLAMA_CHAT_MODEL", "").strip() or DEFAULT_CHAT_MODEL,
+        embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "").strip() or DEFAULT_EMBEDDING_MODEL,
+        num_ctx=num_ctx, timeout_seconds=timeout,
         source_urls=tuple(SOURCE_PAGES.values()) if source_urls is None else tuple(source_urls),
     )
+
+
+def check_ollama(settings: Settings) -> str:
+    """Check local model availability before downloading documents; return index identity."""
+    if any(model.endswith(":cloud") for model in (settings.chat_model, settings.embedding_model)):
+        raise OllamaSetupError("Choose downloaded local models; cloud model tags are not supported.")
+    client = Client(host=settings.base_url, timeout=10)
+    models = client.list().models
+    for model, capability in ((settings.chat_model, "tools"), (settings.embedding_model, "embedding")):
+        name = model if ":" in model else f"{model}:latest"
+        if not any(item.model == name for item in models):
+            raise OllamaSetupError(f"Model is not downloaded. Run: ollama pull {model}")
+        info = client.show(model)
+        if capability not in (info.capabilities or []):
+            message = "tool calling" if capability == "tools" else "embeddings"
+            raise OllamaSetupError(f"The configured model does not support {message}. Choose a compatible local model.")
+    name = settings.embedding_model if ":" in settings.embedding_model else f"{settings.embedding_model}:latest"
+    return next(item.digest for item in models if item.model == name)
 
 
 def describe_error(error: Exception) -> str:
@@ -64,36 +102,38 @@ def describe_error(error: Exception) -> str:
     cause, seen = error, set()
     while id(cause) not in seen:
         seen.add(id(cause))
-        if isinstance(cause, APIError):
-            if cause.code == 429:
-                return "Gemini quota is exhausted. Your saved index is retained. Wait and try again."
-            if cause.code == 503:
-                return "Gemini is temporarily overloaded. Your saved index is retained. Try again later."
-            if cause.code in (400, 401, 403):
-                return "Gemini rejected the request. Check your API key, model, and project access."
-        if cause.__cause__ is None:
+        if isinstance(cause, (OllamaSetupError, RagFlowError)):
+            return str(cause)
+        if isinstance(cause, ResponseError):
+            if cause.status_code == 404:
+                return "Ollama model was not found. Pull the configured models and prepare documents again."
+            if cause.status_code in (429, 503):
+                return "Ollama is busy. Wait for the current request and try again; your saved index is retained."
+            if cause.status_code >= 500:
+                return "Ollama could not run the model. Check available RAM/VRAM and the Ollama logs; try a smaller model or context."
+            return "Ollama rejected the request. Check the model capabilities and configuration."
+        if isinstance(cause, (httpx.TimeoutException, TimeoutError)):
+            return "Ollama timed out. Try again or increase OLLAMA_TIMEOUT_SECONDS; your saved index is retained."
+        if isinstance(cause, (httpx.ConnectError, ConnectionError)):
+            return "Cannot connect to Ollama. Start Ollama and check OLLAMA_BASE_URL, then try again."
+        if isinstance(cause, requests.RequestException):
+            return "Documents could not be downloaded. Check your connection and try preparing them again."
+        if isinstance(cause, ValueError) and str(cause) in {"Select at least one document.", "Enter a question."}:
+            return str(cause)
+        next_cause = cause.__cause__ or cause.__context__
+        if next_cause is None:
             break
-        cause = cause.__cause__
-    if isinstance(error, requests.RequestException):
-        return "Documents could not be downloaded. Check your connection and try preparing them again."
-    if isinstance(error, TimeoutError):
-        return "The request timed out. Try again; your saved index is retained."
-    if isinstance(error, ValueError) and str(error) in {
-        "Enter a Gemini API key or set GEMINI_API_KEY in the project .env file.",
-        "Select at least one document.", "Enter a question.",
-    }:
-        return str(error)
+        cause = next_cause
     return "The request could not be completed. Your saved index is retained. Check your configuration and try again."
 
 
 def build_index(
-    settings: Settings, on_progress: Callable[[str], None], *,
-    cache_dir: Path | None = None, pause_seconds: float = 65,
+    settings: Settings, on_progress: Callable[[str], None], *, cache_dir: Path | None = None,
 ) -> tuple[InMemoryVectorStore, int]:
-    if not settings.api_key:
-        raise ValueError("Enter a Gemini API key or set GEMINI_API_KEY in the project .env file.")
     if not settings.source_urls:
         raise ValueError("Select at least one document.")
+    on_progress("Checking Ollama and downloaded models…")
+    embedding_digest = check_ollama(settings)
     documents = []
     for source_url in settings.source_urls:
         on_progress(f"Downloading {source_url.rsplit('/', 1)[-1]}…")
@@ -104,12 +144,14 @@ def build_index(
     chunks = splitter.split_documents(documents)
     for index, chunk in enumerate(chunks):
         chunk.metadata["chunk_id"] = index
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="gemini-embedding-001", api_key=settings.api_key, vertexai=False,
+    embeddings = OllamaEmbeddings(
+        model=settings.embedding_model, base_url=settings.base_url,
+        client_kwargs={"timeout": settings.timeout_seconds},
     )
-    # Preserve the v0.1.0 cache identity and chunk IDs so existing indexes are reusable.
+    # Provider and digest separate Gemini indexes and invalidate replaced local models.
     identity = json.dumps(
-        {"embedding_model": embeddings.model,
+        {"provider": "ollama", "embedding_model": embeddings.model,
+         "embedding_digest": embedding_digest, "base_url": settings.base_url,
          "chunks": [{"text": chunk.page_content, "metadata": chunk.metadata} for chunk in chunks]},
         sort_keys=True, ensure_ascii=False,
     )
@@ -125,16 +167,7 @@ def build_index(
     for start in range(0, len(pending), 80):
         batch = pending[start:start + 80]
         ids = [f"chunk-{chunk.metadata['chunk_id']}" for chunk in batch]
-        for attempt in range(3):
-            try:
-                vector_store.add_documents(batch, ids=ids)
-                break
-            except Exception as error:
-                cause = error.__cause__ or error
-                if not isinstance(cause, ClientError) or cause.code != 429 or attempt == 2:
-                    raise
-                on_progress(f"Embedding quota reached. Retrying in {pause_seconds:g} seconds…")
-                time.sleep(pause_seconds)
+        vector_store.add_documents(batch, ids=ids)
         temporary_path = index_path.with_suffix(f".{uuid4().hex}.tmp")
         try:
             vector_store.dump(str(temporary_path))
@@ -142,9 +175,6 @@ def build_index(
         finally:
             temporary_path.unlink(missing_ok=True)
         on_progress(f"Prepared {len(vector_store.store)}/{len(chunks)} passages.")
-        if start + len(batch) < len(pending):
-            on_progress(f"Waiting {pause_seconds:g} seconds before the next batch…")
-            time.sleep(pause_seconds)
     return vector_store, len(chunks)
 
 
@@ -174,9 +204,10 @@ class RagSession:
 
     def __init__(self, settings: Settings, vector_store: InMemoryVectorStore, chunk_count: int):
         self.settings, self.vector_store, self.chunk_count = settings, vector_store, chunk_count
-        self.model = init_chat_model(
-            f"google_genai:{settings.chat_model}", api_key=settings.api_key,
-            vertexai=False, timeout=60, max_retries=2,
+        self.model = ChatOllama(
+            model=settings.chat_model, base_url=settings.base_url,
+            num_ctx=settings.num_ctx,
+            client_kwargs={"timeout": settings.timeout_seconds},
         )
 
     @classmethod
@@ -192,6 +223,7 @@ class RagSession:
         request_id = turn_id or uuid4().hex
         backend = StateBackend()
         evidence_by_key, evidence_lock, events = {}, Lock(), SimpleQueue()
+        retrieval_attempted = False
 
         def drain_events():
             while True:
@@ -203,6 +235,8 @@ class RagSession:
         @tool
         def search_documents(query: str) -> str:
             """Find relevant documentation and save evidence files for analysis."""
+            nonlocal retrieval_attempted
+            retrieval_attempted = True
             events.put({"type": "status", "text": "Finding supporting passages…"})
             results = self.vector_store.similarity_search(query, k=4)
             batch_id = uuid4().hex
@@ -274,4 +308,14 @@ class RagSession:
         answer = final_state["messages"][-1]
         if not isinstance(answer, AIMessage) or answer.tool_calls or not answer.text.strip():
             raise RuntimeError("The agent did not produce a final answer.")
+        delegated = any(
+            call["name"] == "task" and call.get("args", {}).get("subagent_type") == "evidence-analyst"
+            for message in final_state["messages"] if isinstance(message, AIMessage)
+            for call in message.tool_calls
+        )
+        if not retrieval_attempted or (evidence_by_key and not delegated):
+            raise RagFlowError(
+                "The local model skipped document search or evidence analysis. "
+                "Try another model with stronger tool calling; your saved index is retained."
+            )
         yield {"type": "complete", "text": answer.text, "evidence": list(evidence_by_key.values())}

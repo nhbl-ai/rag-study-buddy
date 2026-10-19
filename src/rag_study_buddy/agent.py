@@ -1,7 +1,6 @@
 """Terminal entry point for the shared RAG service."""
 
 import sys
-from getpass import getpass
 
 if __package__:
     from .rag import RagSession, describe_error, load_settings
@@ -13,10 +12,8 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    settings = load_settings()
-    if not settings.api_key:
-        settings = load_settings(getpass("Gemini API key: "))
     try:
+        settings = load_settings()
         session = RagSession.prepare(settings, on_progress=lambda text: print(text, flush=True))
         for event in session.stream_answer("What is a subagent, and when should I use one?"):
             if event["type"] == "status":

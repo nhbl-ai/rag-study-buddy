@@ -1,4 +1,3 @@
-from hashlib import sha256
 from uuid import uuid4
 
 import streamlit as st
@@ -76,19 +75,20 @@ def main():
         for name in selected:
             st.markdown(f"[↗ {name}]({SOURCE_PAGES[name]})")
         st.divider()
-        api_key = st.text_input(
-            "Gemini API key", type="password", key="api_key_input",
-            help="Optional when GEMINI_API_KEY is set in your local .env. Used only for this session.",
-        )
-        settings = load_settings(api_key, [SOURCE_PAGES[name] for name in selected])
-        ready_to_prepare = bool(settings.api_key and selected)
-        identity = (settings.source_urls, settings.chat_model, sha256(settings.api_key.encode()).hexdigest())
+        try:
+            settings = load_settings([SOURCE_PAGES[name] for name in selected])
+        except Exception as error:
+            st.error(describe_error(error))
+            return
+        st.markdown("**LOCAL MODELS**")
+        st.caption(f"Chat: {settings.chat_model}")
+        st.caption(f"Embeddings: {settings.embedding_model}")
+        ready_to_prepare = bool(selected)
+        identity = settings
         if st.session_state.settings_identity != identity:
             st.session_state.settings_identity = identity
             st.session_state.rag_session = None
             clear_conversation()
-        if not settings.api_key:
-            st.caption("Add your API key to start.")
         prepare = st.button("Prepare documents", disabled=not ready_to_prepare, width="stretch", key="prepare")
         if st.session_state.rag_session:
             st.success(f"Ready · {st.session_state.rag_session.chunk_count} passages")
@@ -125,8 +125,6 @@ def main():
         )
         if not selected:
             st.info("Select at least one document to start.")
-        elif not settings.api_key:
-            st.info("Set your Gemini API key in the sidebar or in .env to start chatting.")
 
     with evidence_column:
         st.subheader("Evidence")
