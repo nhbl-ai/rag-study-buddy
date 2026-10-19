@@ -141,3 +141,8 @@ Both models remained at zero VRAM in UI checks. Final primary generation, follow
 Final offline checks: 24 tests passed in 7.84s, including actual Deep Agents task/file access with a fake provider, stop-before-synthesis failures, invalid IDs/support/links, per-turn anchors, history, cache/resume and UI/terminal behavior. Dependency and compilation checks passed; whitespace checks were clean.
 
 This demonstrates CPU-only operation on the tested i7/16 GB laptop. It does not establish capacity for concurrent users or performance on every machine. A single inference slot and roughly 72–84 seconds per supported test question limit CPU throughput. Public source downloads still require Internet access. The temporary CPU server is stopped after testing and Streamlit is restarted on the normal server.
+
+
+## Subsequent five-user CPU+iGPU test
+
+The user clarified that the requested load test combines CPU and Intel iGPU. A temporary server offloaded 16/33 Qwen layers to Intel and kept the remaining layers and embeddings on CPU. With five simultaneous prepared RAG sessions and one inference slot, four responses were accepted with citations (one partial), one synthesis request timed out, and the batch ended after 541.01s. All 20 subagent tasks and file reads completed. See [the detailed five-user report](ollama-concurrency-validation.md) for conditions and per-user measurements. This does not establish a responsive or reliable five-user deployment.
