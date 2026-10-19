@@ -54,6 +54,29 @@ The chat model must support text generation and Ollama JSON-schema output; the e
 
 8192 tokens is a starting context size for the existing agent flow, not a promise that all conversations fit. Longer context increases memory use. Close heavy applications on a 16 GB RAM machine; use `ollama ps` to inspect GPU offloading. No fixed concurrency capacity is claimed for the laptop.
 
+## Optional CPU + Intel iGPU profile
+
+The measured profile on this laptop uses eight chat layers on Intel and the remaining 25 on CPU, CPU embeddings, one actual inference slot, and a 512 MiB prompt cache. Layer counts are model-specific, not CPU/GPU utilization percentages. Automatic placement remains the default when layer overrides are absent.
+
+Start the separate profile in one terminal:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_ollama.ps1 -IntelHybrid -ParallelSlots 1 -Port 11435 -PromptCacheMiB 512
+```
+
+In another terminal, point the application at that server and set placement on its model requests:
+
+```powershell
+$env:OLLAMA_BASE_URL = 'http://127.0.0.1:11435'
+$env:OLLAMA_CHAT_GPU_LAYERS = '8'
+$env:OLLAMA_EMBEDDING_GPU_LAYERS = '0'
+.\.venv\Scripts\python.exe -m streamlit run .\streamlit_app.py --server.port 8502
+```
+
+The helper selects Vulkan device 0 by default (`-VulkanDevice` changes the index), enables the iGPU, excludes CUDA/ROCm/HIP devices and limits loaded models to two. Verify Intel in the server log; device numbering can differ on other machines. The positive layer count uses the server's selected GPU; it does not itself select Intel. Blank layer settings use automatic placement; zero requests CPU only. These are process-local settings, and the existing `.env` is not rewritten.
+
+`-ParallelSlots` requests one to five slots, but Ollama 0.40.5 forces this `qwen35` model to **one actual slot**, including when two were requested. The application also admits one chat request at a time per endpoint/model across sessions in the same Python process, so queued users wait before the timed HTTP request begins. Both analyst and synthesis calls share that slot, and exceptions release it. Queue time is included in end-to-end latency; the unchanged 180s timeout does not bound a user's total waiting time. This admission control is process-local, not distributed. Five clients can submit work concurrently and queue; raising this option does not bypass that runtime restriction. The 512 MiB cache bound uses the bundled llama-server's `LLAMA_ARG_CACHE_RAM`; verify its effective limit in the log if changing runtime versions. Context remains 8192 and request timeout remains 180 seconds. See [the tuning measurements](docs/ollama-hybrid-tuning.md) for outcomes and limitations.
+
 ## Run the chat UI
 
 ```powershell
@@ -104,7 +127,7 @@ Run offline regression checks without a model server or API key:
 
 Tests separate indexing/retrieval metadata and cache behavior from graph/generation and UI behavior. They exercise the real Deep Agents task tool and mandatory file-reading subgraph using a fake model, plus history, citation validation, safe failures, and UI configuration changes. Passing them does not establish the local model's answer quality. Historical skipped-step failures and the subsequent CPU-only rerun are recorded separately in `docs/ollama-validation.md`.
 
-A five-user CPU+iGPU burst is documented in [the concurrency report](docs/ollama-concurrency-validation.md): four accepted cited responses (one partial), one timeout, and about nine minutes for the batch under the tested configuration.
+The [initial five-user CPU+iGPU burst](docs/ollama-concurrency-validation.md) returned four accepted responses and one timeout. The [tuned profile with application admission](docs/ollama-hybrid-tuning.md) completed all five workflows without timeout in 641.89s, with 20 subagents/reads and 19 valid citation links; individual waits were about 6.1–10.7 minutes. One comparison answer still needs semantic revision despite valid citations. All 28 offline tests passed. These measurements do not establish responsive multi-user capacity.
 
 The historical 2026-10-08 Gemini terminal validation and 0.1.3 synthetic browser checks remain documented in project context; they are not evidence of live Ollama quality. Broader retrieval, citation grounding and concurrent load evaluation remain necessary.
 

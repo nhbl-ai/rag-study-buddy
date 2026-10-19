@@ -1,5 +1,7 @@
 # Five simultaneous users on CPU + Intel iGPU
 
+A later tuning run is documented in [CPU+iGPU tuning](ollama-hybrid-tuning.md); measurements below are the original 16-layer baseline.
+
 Date: 2026-10-19. Branch: `feat-ollama`. RAG source revision: `5d231f7`.
 
 ## Requested scope

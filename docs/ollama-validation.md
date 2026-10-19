@@ -146,3 +146,8 @@ This demonstrates CPU-only operation on the tested i7/16 GB laptop. It does not 
 ## Subsequent five-user CPU+iGPU test
 
 The user clarified that the requested load test combines CPU and Intel iGPU. A temporary server offloaded 16/33 Qwen layers to Intel and kept the remaining layers and embeddings on CPU. With five simultaneous prepared RAG sessions and one inference slot, four responses were accepted with citations (one partial), one synthesis request timed out, and the batch ended after 541.01s. All 20 subagent tasks and file reads completed. See [the detailed five-user report](ollama-concurrency-validation.md) for conditions and per-user measurements. This does not establish a responsive or reliable five-user deployment.
+
+
+## Subsequent CPU+iGPU tuning with application admission
+
+A later [tuning and five-user validation](ollama-hybrid-tuning.md) selected eight Intel layers and a 512 MiB prompt cache. Ollama 0.40.5 forces qwen35 to one actual slot even when multiple slots are requested. Process-local application admission now queues chat before timed HTTP requests. The final burst completed 5/5 workflows without timeout in 641.89s, with 20 subagents/reads and 19 valid citation links; user latency was 363.07–641.89s. One comparison answer still needs semantic revision despite valid citation IDs. All 28 offline tests passed. These results demonstrate queued completion on this laptop, not responsive multi-user capacity or universal hardware suitability.
