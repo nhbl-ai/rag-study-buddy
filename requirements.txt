@@ -1,6 +1,8 @@
 deepagents==0.7.21
 langchain==1.4.3
 langchain-core==1.6.6
+langgraph==1.2.12
+pydantic==2.13.5
 langchain-ollama==1.1.0
 ollama==0.6.3
 httpx==0.28.1

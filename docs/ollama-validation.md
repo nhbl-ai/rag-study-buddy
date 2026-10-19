@@ -4,7 +4,7 @@ Date: 2026-10-19. Branch: `feat-ollama`, based on `feat-chat-ui` commit `480fe47
 
 ## Scope
 
-This is a local-backend evaluation baseline. The original coordinator, `search_documents` retrieval, `task` delegation to evidence-analyst, evidence-file reading, streaming and citations remain. Prompts and graph construction are retained. A new completion check rejects a response that skipped retrieval or skipped delegation after retrieving passages; it does not prove grounding or citation completeness.
+The sections before **Enforced workflow CPU-only rerun** record the original local-backend evaluation baseline. At that point, the original coordinator, `search_documents` retrieval, `task` delegation to evidence-analyst, evidence-file reading, streaming and citations remained. Prompts and graph construction were retained. A new completion check rejects a response that skipped retrieval or skipped delegation after retrieving passages; it does not prove grounding or citation completeness.
 
 ## Environment
 
@@ -86,3 +86,58 @@ The test used the existing question, "What is a subagent, and when should I use 
 There were three coordinator model calls, taking approximately 49.38, 39.46 and 67.78 seconds. The candidate answer explained subagents but contained no citation links or source URLs. It was a rejected candidate, not a completed RAG answer. This is a failed workflow/citation check, even though indexing, retrieval and CPU inference executed successfully.
 
 The lowest sampled free physical RAM was 0.90 GiB; other running applications affect this value. No successful full-flow response time can be claimed from this run: 156.89 seconds is time to rejection and includes no evidence-analysis subagent work. The result is one question, not a reliability or concurrent-load evaluation. Raw measurements, callback trace, candidate text and retrieved passages are in ignored `work/cpu-rag-test/`. The temporary server was stopped after testing; application source and its normal GPU settings were not modified.
+
+
+## Enforced workflow CPU-only rerun
+
+The user authorized fixing orchestration on `feat-ollama` after the baseline above. Code now requires `search_documents`, then one real Deep Agents `task` per distinct retrieved passage. Each task runs a compiled isolated `evidence-analyst` LangGraph subgraph with a mandatory `read_file -> analyze` path. Jobs run sequentially; each subagent receives only its assigned in-memory file.
+
+The analyst selects numbered spans from the actual file; code extracts those spans verbatim. A per-file JSON schema enumerates allowed span IDs. Synthesis returns structured claims referencing unique quote IDs, such as e2q1, constrained by a schema enum over supplied quotes. Code maps those IDs back to evidence and renders canonical per-turn citations. Invalid output, unknown IDs, missing support or model-written citation links fail closed. The UI publishes only the validated answer, retaining progress/evidence events. Empty or irrelevant evidence produces an explicit insufficient-information answer. These checks establish provenance and citation structure, not proof of semantic entailment.
+
+Chat remains Qwen3.5 4B, embeddings remain EmbeddingGemma 300M, retrieval remains top four, and context remains 8192. Chat now uses `reasoning=False`, `num_predict=1024`, native JSON-schema output and otherwise default sampling. Prompts and orchestration changed; timings are not a controlled model-speed comparison against the original failure.
+
+### Retained iterations
+
+- `work/cpu-rag-fixed/`: fresh indexing 67.10s; rejected a model-retyped quote mismatch after 34.59s. Actual subagent execution succeeded; no answer was accepted. Source-span selection replaced model quote copying.
+- `work/cpu-rag-enforced/`: fresh CPU indexing of 321 chunks 68.23s; separate warm retrieval 0.077s; structurally accepted answer 71.14s. Manual review found a definition confusing a configuration dictionary with the agent concept. A UI follow-up succeeded; an unrelated question was safely rejected for span ID 0. Clearer prompts and per-file schema enums followed.
+- `work/cpu-rag-final/`: primary answer accepted in 71.48s with five citation links and an improved definition; unrelated-question abstention passed. A UI follow-up was rejected for referencing quote 4 when only three quotes existed. This led to unique quote IDs instead of separate evidence/quote numbers.
+- `work/cpu-rag-final-refs/`: final source and all three live cases passed. The shared index was built entirely on CPU in the preceding fresh-index run; both models were unloaded before the final primary measurement. Raw model outputs, task returns, selected quotes, evidence and tokens remain in ignored local output.
+
+### Final measurement
+
+Sample: "What is a subagent, and when should I use one?" Empty history. Separate localhost:11436 server with CUDA and Vulkan disabled. Both models were observed with `size_vram=0`; normal localhost:11434 configuration was retained.
+
+| Phase/check | Result |
+|---|---|
+| Fresh CPU preparation, same indexing pipeline, 321 chunks | 68.23s |
+| Final preparation from that saved index, including downloads | 5.17s |
+| Separate top-four retrieval after unloading embedding model | 1.221s, including cold embedding load |
+| Final complete question phase | 84.35s; accepted |
+| Four analyst model calls | 9.91s, 6.09s, 6.63s, 5.78s |
+| Synthesis model call | 55.83s |
+| Repeated saved-index preparation, including downloads | 4.34s |
+| search_documents / Deep Agents task / analyst model / nested read_file | 1 / 4 / 4 / 4 successful executions |
+| Citation links | 8 links across 8 claim paragraphs; zero unknown links |
+| All selected quotes checked against actual file content | Passed |
+| Model tokens across five calls | 2494 input + 534 output = 3028 |
+| Lowest sampled free physical RAM in final primary run | 1.50 GiB; earlier fresh-index run reached 0.87 GiB |
+| Placement | Chat 3,376,404,232 bytes; embedding 692,993,392 bytes; zero VRAM for both |
+
+Retrieval was checked separately: all four results came from the Subagents page, chunks 108, 105, 104 and 103, covering configuration, when to delegate, context bloat and delegation. Manual review checked the final answer against the retrieved passages and selected quotes; the definition no longer treats a subagent itself as a dictionary. This is a small sample, not a retrieval recall or grounding benchmark.
+
+### Streamlit with real CPU Ollama
+
+AppTest used a real prepared RagSession and the same CPU-built index. The completed primary turn seeded the history for the follow-up. The interface exercised actual model calls, tools, source metadata, citation controls and evidence selection.
+
+| Case | Result | Seconds |
+|---|---|---:|
+| Follow-up: When should I use it instead of adding more tools to the main agent? | Passed; two history messages, four tasks/read_file calls, five valid citation links | 72.19 |
+| Unrelated question: Which team won the 2026 FIFA World Cup? | Passed; four tasks/read_file calls, explicit insufficient-information answer, no invented team | 41.20 |
+| New conversation | Cleared history and retained the real prepared index/service | — |
+| Evidence UI | Selected the current turn; citation popovers and passages rendered | — |
+
+Both models remained at zero VRAM in UI checks. Final primary generation, follow-up and abstention all passed; this is three individual cases, not a statistical reliability claim. The final UI abstention used four analyst calls and one synthesis call because an analyst selected a source span but synthesis correctly found insufficient information.
+
+Final offline checks: 24 tests passed in 7.84s, including actual Deep Agents task/file access with a fake provider, stop-before-synthesis failures, invalid IDs/support/links, per-turn anchors, history, cache/resume and UI/terminal behavior. Dependency and compilation checks passed; whitespace checks were clean.
+
+This demonstrates CPU-only operation on the tested i7/16 GB laptop. It does not establish capacity for concurrent users or performance on every machine. A single inference slot and roughly 72–84 seconds per supported test question limit CPU throughput. Public source downloads still require Internet access. The temporary CPU server is stopped after testing and Streamlit is restarted on the normal server.
