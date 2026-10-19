@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from src.rag_study_buddy.rag import RagSession, SOURCE_PAGES, describe_error, load_settings
+from src.rag_study_buddy.gemini_rag import RagSession, SOURCE_PAGES, describe_error, load_settings
 
 def render_evidence(evidence):
     if not evidence:
@@ -80,9 +80,9 @@ def main():
         except Exception as error:
             st.error(describe_error(error))
             return
-        st.markdown("**LOCAL MODELS**")
-        st.caption(f"Chat: {settings.chat_model}")
-        st.caption(f"Embeddings: {settings.embedding_model}")
+        st.markdown("**MODELS**")
+        st.caption(f"Chat (Gemini API): {settings.chat_model}")
+        st.caption(f"Embeddings (local): {settings.embedding_model}")
         ready_to_prepare = bool(selected)
         identity = settings
         if st.session_state.settings_identity != identity:

@@ -112,13 +112,16 @@ def load_settings(source_urls: Sequence[str] | None = None) -> Settings:
     )
 
 
-def check_ollama(settings: Settings) -> str:
+def check_ollama(settings: Settings, *, embeddings_only: bool = False) -> str:
     """Check local model availability before downloading documents; return index identity."""
-    if any(model.endswith(":cloud") for model in (settings.chat_model, settings.embedding_model)):
+    required_models = [(settings.embedding_model, "embedding")] if embeddings_only else [
+        (settings.chat_model, "completion"), (settings.embedding_model, "embedding"),
+    ]
+    if any(model.endswith(":cloud") for model, _ in required_models):
         raise OllamaSetupError("Choose downloaded local models; cloud model tags are not supported.")
     client = Client(host=settings.base_url, timeout=10)
     models = client.list().models
-    for model, capability in ((settings.chat_model, "completion"), (settings.embedding_model, "embedding")):
+    for model, capability in required_models:
         name = model if ":" in model else f"{model}:latest"
         if not any(item.model == name for item in models):
             raise OllamaSetupError(f"Model is not downloaded. Run: ollama pull {model}")
@@ -162,11 +165,12 @@ def describe_error(error: Exception) -> str:
 
 def build_index(
     settings: Settings, on_progress: Callable[[str], None], *, cache_dir: Path | None = None,
+    embeddings_only: bool = False,
 ) -> tuple[InMemoryVectorStore, int]:
     if not settings.source_urls:
         raise ValueError("Select at least one document.")
     on_progress("Checking Ollama and downloaded models…")
-    embedding_digest = check_ollama(settings)
+    embedding_digest = check_ollama(settings, embeddings_only=True) if embeddings_only else check_ollama(settings)
     documents = []
     for source_url in settings.source_urls:
         on_progress(f"Downloading {source_url.rsplit('/', 1)[-1]}…")

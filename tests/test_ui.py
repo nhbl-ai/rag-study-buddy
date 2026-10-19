@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
-from src.rag_study_buddy.rag import Evidence, Settings, SOURCE_PAGES
+from src.rag_study_buddy.gemini_rag import Evidence, Settings, SOURCE_PAGES
 
 
 class OfflineSession:
@@ -31,13 +31,13 @@ class UiTests(unittest.TestCase):
     def setUp(self):
         self.session = OfflineSession()
         self.chat_model = "offline-chat-model"
-        self.prepare = patch("src.rag_study_buddy.rag.RagSession.prepare", return_value=self.session).start()
+        self.prepare = patch("src.rag_study_buddy.gemini_rag.RagSession.prepare", return_value=self.session).start()
         self.addCleanup(patch.stopall)
 
         def settings(source_urls=None):
             return Settings(chat_model=self.chat_model, source_urls=tuple(source_urls))
 
-        patch("src.rag_study_buddy.rag.load_settings", side_effect=settings).start()
+        patch("src.rag_study_buddy.gemini_rag.load_settings", side_effect=settings).start()
         self.app = AppTest.from_file(
             str(Path(__file__).resolve().parents[1] / "streamlit_app.py"), default_timeout=60,
         ).run()
@@ -58,11 +58,11 @@ class UiTests(unittest.TestCase):
         self.assertEqual(len(self.app.text_input), 0)
 
     def test_invalid_configuration_shows_safe_error_without_network(self):
-        from src.rag_study_buddy.rag import OllamaSetupError
-        with patch("src.rag_study_buddy.rag.load_settings", side_effect=OllamaSetupError("OLLAMA_NUM_CTX must be positive.")):
+        from src.rag_study_buddy.gemini_rag import GeminiSetupError
+        with patch("src.rag_study_buddy.gemini_rag.load_settings", side_effect=GeminiSetupError("GEMINI_TIMEOUT_SECONDS must be positive.")):
             self.app.run()
         self.assert_no_errors()
-        self.assertIn("OLLAMA_NUM_CTX", self.app.error[0].value)
+        self.assertIn("GEMINI_TIMEOUT_SECONDS", self.app.error[0].value)
         self.prepare.assert_not_called()
 
     def test_chat_reuses_session_and_selects_evidence_for_each_turn(self):
