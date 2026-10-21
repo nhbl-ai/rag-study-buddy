@@ -2,13 +2,33 @@
 
 ## [Unreleased]
 
-- Replace Gemini chat and embeddings with local Ollama while retaining evidence-analysis subagents, progress events and the citation UI.
-- Add local model configuration and availability/capability checks; remove API-key prompts and Gemini quota waits.
-- Separate Ollama indexes by model digest and retain batch checkpoint/resume behavior.
-- Add a local-only Windows server helper and update offline regression checks.
-- Enforce document retrieval and one real Deep Agents evidence-analysis task per distinct passage; each isolated subagent must read its file before model analysis.
-- Constrain span and quote IDs to actual evidence, validate structured claim support and citation IDs, then render canonical links before publishing the answer. Stop on invalid evidence instead of exposing unchecked drafts.
-- Use JSON-schema output with thinking disabled and a 1024-token output limit per call; retain progress/evidence events and record CPU-only validation separately from the original failed baseline.
+### Added
+
+- A retrieve-then-generate Gemini service with at most one generation attempt per question and local Ollama embeddings.
+- Exact source-span IDs, native JSON-schema output and code-built citation links checked before publication.
+- A reproducible five-session benchmark counting actual HTTP requests, token usage and per-question latency.
+- Offline regressions for single-call generation, forged citations, abstention, safe errors, quota admission and session isolation.
+- Python 3.13 CI on Ubuntu and Windows, without model servers or API credentials.
+
+### Changed
+
+- Make the single-request Gemini web workflow the portfolio's primary entry point; keep the earlier Ollama experiments available for comparison.
+- Disable generation retries and SDK automatic function calling; return errors instead of silently adding repair requests.
+- Share a process-local rolling request allowance across consistently configured sessions.
+- Document installation from a fresh checkout, local embedding setup, architecture and measured limitations.
+- Replace internal conversational notes and machine-specific workspace paths with technical project context.
+
+### Experimental Ollama workflow
+
+- Retain four isolated evidence-analysis tasks, mandatory file reads, exact-span extraction and validated claim citations.
+- Retain CPU/iGPU placement options, local-only server helper and inference admission before timed requests.
+- Preserve measured CPU-only and concurrent-user successes/failures in the validation reports.
+
+### Validation
+
+- The existing single-request validation completed five concurrent service questions with five Gemini HTTP requests and valid own-session citations.
+- Two successful bursts had different latency ranges; results do not establish production throughput or a fixed response-time guarantee.
+- See `docs/gemini-single-request-validation.md` for the dataset, request counts and limitations.
 
 ## [0.1.3] - 2026-10-09
 

@@ -1,6 +1,6 @@
 ## Architecture and scope
 
-Date: 2026-10-20 (Asia/Bangkok). Branch: `feat-gemini-single-request`, created from `feat-ollama` at `d149d5d`. Neither `feat-ollama`, `feat-chat-ui` nor `main` was moved. The user's pre-existing removal of the `agent.py` module docstring remains separate from this implementation.
+Date: 2026-10-20 (Asia/Bangkok). Branch: `feat-gemini-single-request`, created from `feat-ollama` at `d149d5d`. The original source changes were isolated on a feature branch before portfolio integration.
 
 The active web entry point now imports `gemini_rag.py`: local retrieval -> one native structured Gemini generation -> code validation -> code-built citation links. There are no evidence-analyst subagents, tool selection loops, LLM-based validators or citation-repair model calls. Gemini retry count is zero; SDK automatic function calling is explicitly disabled. No retrieved spans means zero generation requests; model/provider/output failures do not trigger an automatic second attempt.
 
