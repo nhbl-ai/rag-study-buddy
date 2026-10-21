@@ -35,3 +35,7 @@ Python 3.13 is the tested runtime. CI runs offline tests and dependency checks o
 ## Maintenance rules
 
 Keep source metadata and evidence visible, do not publish unchecked drafts, and do not add silent model calls to repair output. Benchmark changes with real HTTP counts when request usage changes. Record only tests actually run. Use a public GitHub noreply identity for new commits and keep machine-specific paths and conversational logs out of shared documentation.
+
+## Portfolio maintenance
+
+The default main branch contains the single-request Gemini web workflow, fresh-checkout setup instructions, updated changelog and pinned-action Python 3.13 CI for Ubuntu/Windows. Current shared documentation omits machine-specific paths and internal conversational notes. Existing commit/tag history is intentionally retained; older author identities remain visible in that history. New local commits use the GitHub noreply identity. Repository visibility remains private.
