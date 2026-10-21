@@ -1,12 +1,11 @@
 # Collaboration guidelines
 
-- Work only in `D:\Personal project\rag-study-buddy`. Do not create or use separate worktrees unless the user explicitly changes this instruction.
-
-- Goal: build a document chat application with citations and evidence.
-- The user codes and builds the application themselves. Help with specific requests; do not impose a learning path, exercises, or technology choices.
-- Communicate in Vietnamese. Use clear English names for variables, functions, and modules.
-- Read `docs/project-context.md` before continuing in a new chat; update it when project decisions change.
-- Preserve source information for content so it can be retrieved and cited.
-- Run checks appropriate to the changes. Do not claim to have run the application or an API unless you actually did.
-- When evaluating RAG, check retrieval separately from generation.
-- Do not commit API keys, `.env`, private data, vector stores, or large outputs. Do not modify third-party code just to hide errors.
+- Work in the existing repository checkout. Do not create separate worktrees unless explicitly requested.
+- Build document question answering with inspectable citations and evidence.
+- Communicate in Vietnamese; use clear English names in code and English project documentation.
+- Read `docs/project-context.md` before continuing work and update it when technical decisions change.
+- Preserve source metadata so content can be retrieved and cited.
+- Evaluate retrieval separately from answer generation.
+- Run checks appropriate to each change. Report only application/API runs actually performed.
+- Keep API keys, `.env`, private data, vector stores, models and raw benchmark output out of Git.
+- Do not modify third-party code to hide errors.
