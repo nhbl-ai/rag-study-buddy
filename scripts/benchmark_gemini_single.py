@@ -62,7 +62,7 @@ def main():
     if out.exists():
         parser.error('Output directory already exists; choose a fresh --output to preserve earlier results.')
     out.mkdir(parents=True)
-    settings = replace(rag.load_settings(),embedding_gpu_layers=0)
+    settings = replace(rag.load_settings(), embedding_gpu_layers=0, provider_order=("gemini",))
     index = args.index.resolve()
     lock = threading.RLock()
     report = {'users': [],'retrieval_probes': [],'preparation_embedding_http': [],

@@ -24,7 +24,10 @@ class OfflineSession:
         yield {"type": "draft", "text": "Partial answer"}
         if self.fail:
             raise RuntimeError("Do not show this secret SDK detail")
-        yield {"type": "complete", "text": f"Supported answer [1](#evidence-{turn_id}-1)", "evidence": evidence}
+        yield {
+            "type": "complete", "text": f"Supported answer [1](#evidence-{turn_id}-1)",
+            "evidence": evidence, "provider": "Groq",
+        }
 
 
 class UiTests(unittest.TestCase):
@@ -74,6 +77,7 @@ class UiTests(unittest.TestCase):
         self.assertIn("**Question:** What is a subagent?", messages)
         self.assertIn("**Question:** When should I use it?", messages)
         self.assertEqual(sum(value.startswith("**Answer:** ") for value in messages), 2)
+        self.assertEqual(sum(item.value == "Generated with Groq" for item in self.app.caption), 2)
         self.assertEqual(len(self.session.calls[1][1]), 2)
         turns = self.app.session_state["turns"]
         self.assertEqual(self.app.selectbox(key="evidence_turn").value, turns[-1]["id"])

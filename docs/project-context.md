@@ -10,16 +10,18 @@ The web app uses a fixed library of three public LangChain documentation pages. 
 
 - `streamlit_app.py` uses `src/rag_study_buddy/gemini_rag.py`.
 - Local Ollama `embeddinggemma:300m` creates document/query vectors. Saved indexes preserve source URLs, chunk IDs, content, embedding digest and endpoint identity.
-- Code retrieves up to four distinct passages, assigns exact source-span IDs, and makes at most one native structured Gemini generation attempt.
-- Default chat model: `gemini-3.5-flash-lite`; output cap 2048; timeout 60 seconds. SDK automatic function calling and retries are disabled.
+- Code retrieves up to four distinct passages once and assigns exact source-span IDs. Generation tries configured providers in `RAG_PROVIDER_ORDER` (Gemini, Groq, Cloudflare Workers AI by default), with a single attempt per provider.
+- Gemini uses native structured output with a span-ID enum. Groq Chat Completions uses strict structured output and Cloudflare Workers AI uses JSON Mode over the direct REST API with a bearer token and Account ID. All three use the same local answer and span validation.
+- Default models are `gemini-3.5-flash-lite`, `openai/gpt-oss-20b`, and `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. The output cap is 2048 tokens and the default timeout is 60 seconds per provider. Gemini SDK automatic function calling and retries are disabled.
 - Code requires claim support, validates span membership and creates own-turn citation links. It withholds malformed answers and unchecked drafts; empty retrieval uses no generation request.
 - Citation provenance is not proof of semantic correctness. Evaluate support and answer quality separately.
 - Recent user questions help resolve follow-ups. Earlier assistant answers are not evidence.
-- A process-local rolling allowance defaults to 12 requests/60 seconds. It does not coordinate external traffic, multiple processes, TPM or RPD.
+- Gemini's process-local rolling allowance defaults to 12 requests per 60 seconds. At capacity, it is skipped if a backup is configured or queued if Gemini is the only provider. All providers share cooldowns across sessions in one process after HTTP 429. Gemini HTTP 402 for depleted prepaid credits also triggers failover. Provider retry hints set the cooldown, with defaults of 60 seconds for HTTP 429 and five minutes for HTTP 402.
+- Generation request timeouts and HTTP 408 and 504 trigger immediate failover for the current question. Each later question starts from the configured provider priority and honors any active quota cooldowns. Other generation failures stop the turn.
 
 ## Interfaces and experiments
 
-The active terminal sample is `python -m src.rag_study_buddy.gemini_agent`. The legacy `agent.py`/`rag.py` modules retain the four-subagent Ollama graph for regression tests and comparison. The `feat-ollama` branch preserves the local-model experiment.
+The active terminal sample is `python -m src.rag_study_buddy.gemini_agent`. The legacy `agent.py`/`rag.py` modules retain the four-subagent Ollama graph for regression tests and comparison. The local-model experiment is recorded in the history of `feat-ollama`.
 
 Python 3.13 is the tested runtime. CI runs offline tests and dependency checks on Ubuntu and Windows; live published measurements were performed on Windows. Never require a real API key or model server for offline tests.
 
@@ -29,7 +31,7 @@ Python 3.13 is the tested runtime. CI runs offline tests and dependency checks o
 - Per-question latency: 2.03-2.95 seconds in the final burst and 8.93-15.47 seconds in an earlier successful burst. Neither is a production latency guarantee.
 - Final chat usage: 9,038 input + 1,239 output = 10,277 tokens; provider and callback totals matched.
 - The 321-chunk local index was reused without corpus re-embedding. Preparation retrieval probes were measured separately.
-- Forty-six offline tests cover indexing, generation, citation rejection, UI behavior, isolation and legacy graph regressions.
+- Offline tests cover indexing, generation, citation rejection, UI behavior, isolation and legacy graph regressions. Mocked HTTP tests verify quota and timeout failover, shared cooldowns and REST request formats. Published live measurements used Gemini alone.
 - Detailed outcomes, including failures and limitations, remain in the validation reports. Raw traces, models and indexes stay in ignored local directories.
 
 ## Maintenance rules
@@ -38,4 +40,4 @@ Keep source metadata and evidence visible, do not publish unchecked drafts, and 
 
 ## Portfolio maintenance
 
-The default main branch contains the single-request Gemini web workflow, fresh-checkout setup instructions, updated changelog and pinned-action Python 3.13 CI for Ubuntu/Windows. Current shared documentation omits machine-specific paths and internal conversational notes. Existing commit/tag history is intentionally retained; older author identities remain visible in that history. New local commits use the GitHub noreply identity. Repository visibility remains private.
+The default main branch contains the multi-provider web workflow, fresh-checkout setup instructions, updated changelog and pinned-action Python 3.13 CI for Ubuntu and Windows. Current shared documentation omits machine-specific paths and internal conversational notes. Existing commit and tag history is intentionally retained. Older author identities remain visible in that history. New local commits use the GitHub noreply identity. Repository visibility remains private.

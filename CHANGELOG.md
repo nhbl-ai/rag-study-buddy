@@ -4,7 +4,7 @@
 
 ### Added
 
-- A retrieve-then-generate Gemini service with at most one generation attempt per question and local Ollama embeddings.
+- A retrieve-then-generate service with local Ollama embeddings and configurable quota and timeout failover between Gemini, Groq and Cloudflare Workers AI.
 - Exact source-span IDs, native JSON-schema output and code-built citation links checked before publication.
 - A reproducible five-session benchmark counting actual HTTP requests, token usage and per-question latency.
 - Offline regressions for single-call generation, forged citations, abstention, safe errors, quota admission and session isolation.
@@ -14,7 +14,7 @@
 
 - Make the single-request Gemini web workflow the portfolio's primary entry point; keep the earlier Ollama experiments available for comparison.
 - Disable generation retries and SDK automatic function calling; return errors instead of silently adding repair requests.
-- Share a process-local rolling request allowance across consistently configured sessions.
+- Share Gemini's local request allowance and provider quota cooldowns across sessions in the same process.
 - Document installation from a fresh checkout, local embedding setup, architecture and measured limitations.
 - Replace internal conversational notes and machine-specific workspace paths with technical project context.
 

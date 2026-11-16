@@ -3,6 +3,7 @@ from uuid import uuid4
 import streamlit as st
 
 from src.rag_study_buddy.gemini_rag import RagSession, SOURCE_PAGES, describe_error, load_settings
+from src.rag_study_buddy.generation import PROVIDER_NAMES
 
 def render_evidence(evidence):
     if not evidence:
@@ -81,7 +82,11 @@ def main():
             st.error(describe_error(error))
             return
         st.markdown("**MODELS**")
-        st.caption(f"Chat (Gemini API): {settings.chat_model}")
+        models = settings.generation_models
+        if models:
+            st.caption("Chat priority · " + " → ".join(f"{PROVIDER_NAMES[name]} ({model})" for name, model in models.items()))
+        else:
+            st.caption("Set a generation API key in .env.")
         st.caption(f"Embeddings (local): {settings.embedding_model}")
         ready_to_prepare = bool(selected)
         identity = settings
@@ -118,6 +123,8 @@ def main():
                         st.error(turn["error"])
                     else:
                         st.markdown(f"**Answer:** {turn['answer']}")
+                        if turn.get("provider"):
+                            st.caption(f"Generated with {turn['provider']}")
                     render_citation_controls(turn)
         question = st.chat_input(
             "Ask about your documents…", disabled=not ready_to_prepare,
@@ -188,6 +195,7 @@ def main():
                             elif event["type"] == "complete":
                                 turn["answer"] = event["text"]
                                 turn["evidence"] = event["evidence"]
+                                turn["provider"] = event.get("provider")
                                 answer_box.markdown(f"**Answer:** {turn['answer']}")
                         status.update(label="Answer ready", state="complete")
                     except Exception as error:

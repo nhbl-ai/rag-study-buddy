@@ -1,4 +1,4 @@
-"""Terminal sample for the single-request Gemini RAG workflow."""
+"""Terminal sample for the cited RAG workflow."""
 
 import sys
 
@@ -29,6 +29,8 @@ def main() -> int:
                     answer = answer.replace(f"(#{evidence.anchor})", f"({evidence.source})")
                 print("\nAnswer:")
                 print(answer)
+                if event.get("provider"):
+                    print(f"\nGenerated with {event['provider']}")
     except Exception as error:
         print(describe_error(error), file=sys.stderr)
         return 1
