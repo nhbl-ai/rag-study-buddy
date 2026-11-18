@@ -1,0 +1,25 @@
+# Answer generation priority. Set to "gemini" for Gemini-only generation.
+RAG_PROVIDER_ORDER = "gemini,groq,cloudflare"
+# Maximum number of passages retrieved for one question.
+RAG_RETRIEVAL_TOP_K = 4
+# Per-answer output token cap for the selected provider.
+RAG_MAX_OUTPUT_TOKENS = 2048
+
+GEMINI_CHAT_MODEL = "gemini-3.5-flash-lite"
+GEMINI_TIMEOUT_SECONDS = 60
+# Rolling allowance shared by sessions in one Python process and quota group.
+GEMINI_REQUESTS_PER_MINUTE = 12
+GEMINI_QUOTA_GROUP = "default-project"
+
+GROQ_CHAT_MODEL = "openai/gpt-oss-20b"
+GROQ_TIMEOUT_SECONDS = 60
+
+CLOUDFLARE_CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+CLOUDFLARE_TIMEOUT_SECONDS = 60
+
+# Ollama provides embeddings for retrieved documents and questions.
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_EMBEDDING_MODEL = "embeddinggemma:300m"
+OLLAMA_TIMEOUT_SECONDS = 180
+# Omit for automatic placement or set to 0 for CPU embeddings.
+# OLLAMA_EMBEDDING_GPU_LAYERS = 0

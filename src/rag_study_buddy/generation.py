@@ -45,11 +45,11 @@ def _post(provider, url, api_key, timeout, payload):
     return response
 
 
-def invoke_groq(api_key, model, timeout, messages):
+def invoke_groq(api_key, model, timeout, messages, *, max_output_tokens=MAX_OUTPUT_TOKENS):
     response = _post("groq", "https://api.groq.com/openai/v1/chat/completions", api_key, timeout, {
         "model": model,
         "messages": messages,
-        "max_completion_tokens": MAX_OUTPUT_TOKENS,
+        "max_completion_tokens": max_output_tokens,
         "response_format": {
             "type": "json_schema",
             "json_schema": {"name": "cited_answer", "strict": True, "schema": REST_SCHEMA},
@@ -64,11 +64,11 @@ def invoke_groq(api_key, model, timeout, messages):
     raise RagFlowError("Groq returned incomplete or invalid answer data. No answer was accepted; try again.")
 
 
-def invoke_cloudflare(api_token, account_id, model, timeout, messages):
+def invoke_cloudflare(api_token, account_id, model, timeout, messages, *, max_output_tokens=MAX_OUTPUT_TOKENS):
     endpoint = f"https://api.cloudflare.com/client/v4/accounts/{quote(account_id, safe='')}/ai/run"
     response = _post("cloudflare", f"{endpoint}/{quote(model, safe='@/')}", api_token, timeout, {
         "messages": messages,
-        "max_tokens": MAX_OUTPUT_TOKENS,
+        "max_tokens": max_output_tokens,
         "response_format": {"type": "json_schema", "json_schema": REST_SCHEMA},
     })
     try:

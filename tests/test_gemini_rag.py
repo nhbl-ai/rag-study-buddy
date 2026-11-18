@@ -5,6 +5,8 @@ import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -154,6 +156,61 @@ class GenerationTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_runtime_file_settings_reach_session_and_share_gemini_allowance(self):
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            root = Path(directory)
+            (root / 'rag.toml').write_text(
+                'GEMINI_REQUESTS_PER_MINUTE = 6\nRAG_RETRIEVAL_TOP_K = 3\n'
+                'RAG_MAX_OUTPUT_TOKENS = 1024\nOLLAMA_EMBEDDING_GPU_LAYERS = 0\n',
+                encoding='utf-8',
+            )
+            (root / '.env').write_text('GEMINI_API_KEY=offline\n', encoding='utf-8')
+            with patch.object(rag.local, 'PROJECT_ROOT', root):
+                settings = rag.load_settings()
+
+        store = MagicMock()
+        store.similarity_search.return_value = []
+        with patch.object(rag, 'ChatGoogleGenerativeAI') as factory:
+            session = rag.RagSession(settings, store, 0)
+        list(session.stream_answer('Question'))
+        store.similarity_search.assert_called_once_with('Question', k=3)
+        self.assertEqual(rag._get_limiter(settings).limit, 6)
+        self.assertEqual(factory.call_args.kwargs['max_output_tokens'], 1024)
+        self.assertEqual(settings.embedding_gpu_layers, 0)
+
+    def test_existing_dotenv_runtime_settings_and_process_environment_override_toml(self):
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {'GEMINI_REQUESTS_PER_MINUTE': '7'}, clear=True):
+            root = Path(directory)
+            (root / 'rag.toml').write_text(
+                'GEMINI_REQUESTS_PER_MINUTE = 6\nGEMINI_TIMEOUT_SECONDS = 10\n', encoding='utf-8',
+            )
+            (root / '.env').write_text(
+                'GEMINI_REQUESTS_PER_MINUTE=8\nGEMINI_TIMEOUT_SECONDS=11.5\n', encoding='utf-8',
+            )
+            with patch.object(rag.local, 'PROJECT_ROOT', root):
+                settings = rag.load_settings()
+
+        self.assertEqual(settings.requests_per_minute, 7)
+        self.assertEqual(settings.chat_timeout_seconds, 11.5)
+
+    def test_invalid_runtime_file_reports_safe_configuration_errors(self):
+        cases = (
+            ('GEMINI_CHAT_MODEL = "unclosed-secret', 'valid TOML'),
+            ('GEMINI_API_KEY = "secret-value"', 'unsupported settings'),
+            ('GEMINI_REQUESTS_PER_MINUTE = true', 'GEMINI_REQUESTS_PER_MINUTE'),
+            ('RAG_RETRIEVAL_TOP_K = 0', 'RAG_RETRIEVAL_TOP_K'),
+            ('OLLAMA_EMBEDDING_GPU_LAYERS = -1', 'OLLAMA_EMBEDDING_GPU_LAYERS'),
+        )
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            root = Path(directory)
+            with patch.object(rag.local, 'PROJECT_ROOT', root):
+                for content, message in cases:
+                    with self.subTest(message=message):
+                        (root / 'rag.toml').write_text(content, encoding='utf-8')
+                        with self.assertRaisesRegex(rag.GeminiSetupError, message) as error:
+                            rag.load_settings()
+                        self.assertNotIn('secret', str(error.exception))
+
     def test_credentials_are_redacted_and_blank_primary_key_falls_back(self):
         with patch.object(rag,'load_dotenv'),patch.dict(os.environ,{'GEMINI_API_KEY':'  ','GOOGLE_API_KEY':'secret-fallback'},clear=True):
             settings=rag.load_settings()

@@ -6,13 +6,16 @@ RAG Study Buddy is a personal portfolio prototype for documentation question ans
 
 The web app uses a fixed library of three public LangChain documentation pages. Authentication, uploads, persistent conversations and production deployment are outside the implemented scope.
 
+The `codex/smart-study-planner-rag` branch packages the Python RAG component for use alongside the Smart Study Planner backend. Python code remains under `src/` and `tests/`. Planner HTTP integration and access-controlled document processing are separate work.
+
 ## Active architecture
 
 - `streamlit_app.py` uses `src/rag_study_buddy/gemini_rag.py`.
 - Local Ollama `embeddinggemma:300m` creates document/query vectors. Saved indexes preserve source URLs, chunk IDs, content, embedding digest and endpoint identity.
-- Code retrieves up to four distinct passages once and assigns exact source-span IDs. Generation tries configured providers in `RAG_PROVIDER_ORDER` (Gemini, Groq, Cloudflare Workers AI by default), with a single attempt per provider.
+- Code retrieves passages once using `RAG_RETRIEVAL_TOP_K` (four by default), deduplicates them and assigns exact source-span IDs. Generation tries configured providers in `RAG_PROVIDER_ORDER` (Gemini, Groq, Cloudflare Workers AI by default), with a single attempt per provider.
 - Gemini uses native structured output with a span-ID enum. Groq Chat Completions uses strict structured output and Cloudflare Workers AI uses JSON Mode over the direct REST API with a bearer token and Account ID. All three use the same local answer and span validation.
-- Default models are `gemini-3.5-flash-lite`, `openai/gpt-oss-20b`, and `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. The output cap is 2048 tokens and the default timeout is 60 seconds per provider. Gemini SDK automatic function calling and retries are disabled.
+- Default models are `gemini-3.5-flash-lite`, `openai/gpt-oss-20b`, and `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. `RAG_MAX_OUTPUT_TOKENS` defaults to 2048 tokens and the default timeout is 60 seconds per provider. Gemini SDK automatic function calling and retries are disabled.
+- `rag.toml` holds editable runtime settings for Streamlit and the active terminal workflow. Secrets stay in local `.env` or the process environment. Process environment values and legacy `.env` settings override the TOML values.
 - Code requires claim support, validates span membership and creates own-turn citation links. It withholds malformed answers and unchecked drafts; empty retrieval uses no generation request.
 - Citation provenance is not proof of semantic correctness. Evaluate support and answer quality separately.
 - Recent user questions help resolve follow-ups. Earlier assistant answers are not evidence.

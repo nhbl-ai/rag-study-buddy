@@ -71,7 +71,8 @@ def main():
               'scope': 'independent prepared RagSession objects; five different questions; no browser/network-user load simulation',
               'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
               'source_sha256': hashlib.sha256(Path(rag.__file__).read_bytes()).hexdigest(),
-              'native_chat_max_retries': 0,'process_request_allowance_per_minute': settings.requests_per_minute}
+              'native_chat_max_retries': 0,'process_request_allowance_per_minute': settings.requests_per_minute,
+              'retrieval_top_k': settings.retrieval_top_k,'max_output_tokens': settings.max_output_tokens}
     sessions, embeddings_clients = [], []
 
     def save(name='partial.json'):
@@ -205,7 +206,7 @@ def main():
         assert index.stem=='rag-index-'+expected,'Embedding index identity does not match the configured model/digest/endpoint'
         report.update(chunks=len(base_store.store),embedding_digest=digest,index_identity_verified=True)
         for question in QUESTIONS[:args.users]:
-            began=time.perf_counter();matches=base_store.similarity_search_with_score(question,k=4)
+            began=time.perf_counter();matches=base_store.similarity_search_with_score(question,k=settings.retrieval_top_k)
             report['retrieval_probes'].append({'question':question,'seconds':time.perf_counter()-began,
                 'matches':[{'source':d.metadata['source'],'chunk_id':d.metadata['chunk_id'],'score':float(score),'text':d.page_content} for d,score in matches]})
         print('SEPARATE RETRIEVAL',[(round(p['seconds'],3),[m['chunk_id'] for m in p['matches']]) for p in report['retrieval_probes']],flush=True)

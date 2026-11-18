@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import tomllib
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_CLOUDFLARE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 DEFAULT_PROVIDER_ORDER = tuple(PROVIDER_NAMES)
 MISSING_PROVIDER = (
-    "Configure a provider in RAG_PROVIDER_ORDER in the project-root .env file. "
+    "Choose a provider in RAG_PROVIDER_ORDER in rag.toml and set its credentials in .env. "
     "Set GEMINI_API_KEY (or GOOGLE_API_KEY), GROQ_API_KEY, or both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID."
 )
 
@@ -57,6 +58,8 @@ class Settings:
     cloudflare_account_id: str = field(default="", repr=False)
     cloudflare_chat_model: str = DEFAULT_CLOUDFLARE_MODEL
     cloudflare_timeout_seconds: float = 60
+    retrieval_top_k: int = 4
+    max_output_tokens: int = MAX_OUTPUT_TOKENS
 
     @property
     def generation_models(self) -> dict[str, str]:
@@ -72,28 +75,46 @@ class GeminiSetupError(RuntimeError):
     """Safe configuration error without provider request data or credentials."""
 
 
-def _positive_setting(name: str, default: int, parse: type[int] | type[float]):
-    try:
-        value = parse(os.getenv(name, str(default)))
-        if value > 0 and math.isfinite(value):
-            return value
-    except (ValueError, OverflowError):
-        pass
-    raise GeminiSetupError(f"Set {name} to a positive {parse.__name__} value.")
-
-
 def load_settings(source_urls: Sequence[str] | None = None) -> Settings:
+    try:
+        with (local.PROJECT_ROOT / "rag.toml").open("rb") as file:
+            config = tomllib.load(file)
+    except FileNotFoundError:
+        config = {}
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        raise GeminiSetupError("Check that rag.toml is readable and contains valid TOML.") from None
+
+    def read(name: str, default: str | int | float | None) -> str:
+        default_type = type(default)
+        allowed_types = {type(None): (int,), float: (int, float)}.get(default_type, (default_type,))
+        value = config.pop(name, default)
+        if value is not None and type(value) not in allowed_types:
+            expected = " or ".join(kind.__name__ for kind in allowed_types)
+            raise GeminiSetupError(f"Set {name} to a TOML {expected} in rag.toml.")
+        return os.getenv(name, "" if value is None else str(value)).strip()
+
+    def positive(name: str, default: int | float):
+        text = read(name, default)
+        parse = type(default)
+        try:
+            value = parse(text)
+            if value > 0 and math.isfinite(value):
+                return value
+        except (ValueError, OverflowError):
+            pass
+        raise GeminiSetupError(f"Set {name} to a positive {parse.__name__} value.")
+
     load_dotenv(local.PROJECT_ROOT / ".env")
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
     try:
-        placement = os.getenv("OLLAMA_EMBEDDING_GPU_LAYERS", "").strip()
+        placement = read("OLLAMA_EMBEDDING_GPU_LAYERS", None)
         layers = int(placement) if placement else None
         if layers is not None and layers < 0:
             raise ValueError
     except ValueError:
         raise GeminiSetupError("Set OLLAMA_EMBEDDING_GPU_LAYERS to blank or a non-negative integer.") from None
-    order = os.getenv("RAG_PROVIDER_ORDER", "").strip().lower() or ",".join(DEFAULT_PROVIDER_ORDER)
+    order = read("RAG_PROVIDER_ORDER", ",".join(DEFAULT_PROVIDER_ORDER)).lower() or ",".join(DEFAULT_PROVIDER_ORDER)
     provider_order = tuple(name.strip() for name in order.split(","))
     if len(set(provider_order)) != len(provider_order) or any(name not in PROVIDER_NAMES for name in provider_order):
         raise GeminiSetupError("Set RAG_PROVIDER_ORDER to a comma-separated list of unique providers: gemini, groq, cloudflare.")
@@ -102,26 +123,31 @@ def load_settings(source_urls: Sequence[str] | None = None) -> Settings:
     if ("cloudflare" in provider_order and cloudflare_token
             and not re.fullmatch(r"[0-9a-f]{32}", cloudflare_account_id)):
         raise GeminiSetupError("Set CLOUDFLARE_ACCOUNT_ID to the 32-character hex ID shown in the Cloudflare dashboard.")
-    return Settings(
+    settings = Settings(
         api_key=os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip(),
-        chat_model=os.getenv("GEMINI_CHAT_MODEL", "").strip() or DEFAULT_CHAT_MODEL,
-        base_url=os.getenv("OLLAMA_BASE_URL", "").strip().rstrip("/") or local.DEFAULT_BASE_URL,
-        embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "").strip() or local.DEFAULT_EMBEDDING_MODEL,
+        chat_model=read("GEMINI_CHAT_MODEL", DEFAULT_CHAT_MODEL) or DEFAULT_CHAT_MODEL,
+        base_url=read("OLLAMA_BASE_URL", local.DEFAULT_BASE_URL).rstrip("/") or local.DEFAULT_BASE_URL,
+        embedding_model=read("OLLAMA_EMBEDDING_MODEL", local.DEFAULT_EMBEDDING_MODEL) or local.DEFAULT_EMBEDDING_MODEL,
         embedding_gpu_layers=layers,
-        embedding_timeout_seconds=_positive_setting("OLLAMA_TIMEOUT_SECONDS", 180, float),
-        chat_timeout_seconds=_positive_setting("GEMINI_TIMEOUT_SECONDS", 60, float),
-        requests_per_minute=_positive_setting("GEMINI_REQUESTS_PER_MINUTE", 12, int),
-        quota_group=os.getenv("GEMINI_QUOTA_GROUP", "").strip() or "default-project",
+        embedding_timeout_seconds=positive("OLLAMA_TIMEOUT_SECONDS", 180.0),
+        chat_timeout_seconds=positive("GEMINI_TIMEOUT_SECONDS", 60.0),
+        requests_per_minute=positive("GEMINI_REQUESTS_PER_MINUTE", 12),
+        quota_group=read("GEMINI_QUOTA_GROUP", "default-project") or "default-project",
         source_urls=tuple(SOURCE_PAGES.values()) if source_urls is None else tuple(source_urls),
         provider_order=provider_order,
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        groq_chat_model=os.getenv("GROQ_CHAT_MODEL", "").strip() or DEFAULT_GROQ_MODEL,
-        groq_timeout_seconds=_positive_setting("GROQ_TIMEOUT_SECONDS", 60, float),
+        groq_chat_model=read("GROQ_CHAT_MODEL", DEFAULT_GROQ_MODEL) or DEFAULT_GROQ_MODEL,
+        groq_timeout_seconds=positive("GROQ_TIMEOUT_SECONDS", 60.0),
         cloudflare_api_token=cloudflare_token,
         cloudflare_account_id=cloudflare_account_id,
-        cloudflare_chat_model=os.getenv("CLOUDFLARE_CHAT_MODEL", "").strip() or DEFAULT_CLOUDFLARE_MODEL,
-        cloudflare_timeout_seconds=_positive_setting("CLOUDFLARE_TIMEOUT_SECONDS", 60, float),
+        cloudflare_chat_model=read("CLOUDFLARE_CHAT_MODEL", DEFAULT_CLOUDFLARE_MODEL) or DEFAULT_CLOUDFLARE_MODEL,
+        cloudflare_timeout_seconds=positive("CLOUDFLARE_TIMEOUT_SECONDS", 60.0),
+        retrieval_top_k=positive("RAG_RETRIEVAL_TOP_K", 4),
+        max_output_tokens=positive("RAG_MAX_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS),
     )
+    if config:
+        raise GeminiSetupError(f"Remove unsupported settings from rag.toml ({', '.join(sorted(config))}).")
+    return settings
 
 
 def _error_chain(error: Exception) -> Iterator[BaseException]:
@@ -324,7 +350,7 @@ class RagSession:
             self.model = ChatGoogleGenerativeAI(
                 model=settings.chat_model, api_key=settings.api_key, vertexai=False,
                 timeout=settings.chat_timeout_seconds, max_retries=0,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
+                max_output_tokens=settings.max_output_tokens,
             )
 
     @classmethod
@@ -337,11 +363,14 @@ class RagSession:
     def _invoke(self, provider, messages, spans, config, waited):
         settings = self.settings
         if provider == "groq":
-            return invoke_groq(settings.groq_api_key, settings.groq_chat_model, settings.groq_timeout_seconds, messages)
+            return invoke_groq(
+                settings.groq_api_key, settings.groq_chat_model, settings.groq_timeout_seconds, messages,
+                max_output_tokens=settings.max_output_tokens,
+            )
         if provider == "cloudflare":
             return invoke_cloudflare(
                 settings.cloudflare_api_token, settings.cloudflare_account_id, settings.cloudflare_chat_model,
-                settings.cloudflare_timeout_seconds, messages,
+                settings.cloudflare_timeout_seconds, messages, max_output_tokens=settings.max_output_tokens,
             )
         schema = CitedAnswer.model_json_schema()
         schema["$defs"]["ClaimSupport"]["properties"]["quote_id"]["enum"] = list(spans)
@@ -364,7 +393,7 @@ class RagSession:
         request_id = turn_id or uuid4().hex
         yield {"type": "status", "text": "Finding supporting passages locally…"}
         evidence, seen = [], set()
-        for document in self.vector_store.similarity_search(query, k=4):
+        for document in self.vector_store.similarity_search(query, k=self.settings.retrieval_top_k):
             key = (document.metadata["source"], document.metadata["chunk_id"])
             if key in seen:
                 continue

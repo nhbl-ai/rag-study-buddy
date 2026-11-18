@@ -73,7 +73,8 @@ class FailoverTests(unittest.TestCase):
             cloudflare_answer(),
             cloudflare_answer(as_text=True),
         )
-        session = self.session(transport=transport)
+        settings = replace(self.settings, max_output_tokens=1024)
+        session = self.session(settings, transport=transport)
         events = list(session.stream_answer("Question?", turn_id="first"))
         self.store.similarity_search.assert_called_once_with("Question?", k=4)
         self.assertEqual(events[-1]["text"], "Evidence text. [1](#evidence-first-1)")
@@ -82,7 +83,7 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual([request.url.host for request in self.requests], [
             "generativelanguage.googleapis.com", "api.groq.com", "api.cloudflare.com",
         ])
-        _, groq, cloudflare = self.requests
+        gemini, groq, cloudflare = self.requests
         self.assertEqual(groq.headers["Authorization"], "Bearer offline-groq")
         self.assertEqual(cloudflare.headers["Authorization"], "Bearer offline-cloudflare")
         self.assertEqual(groq.url.path, "/openai/v1/chat/completions")
@@ -91,7 +92,9 @@ class FailoverTests(unittest.TestCase):
         groq_payload, cloudflare_payload = json.loads(groq.content), json.loads(cloudflare.content)
         self.assertTrue(groq_payload["response_format"]["json_schema"]["strict"])
         self.assertEqual(groq_payload["messages"], cloudflare_payload["messages"])
-        self.assertEqual(cloudflare_payload["max_tokens"], 2048)
+        self.assertEqual(json.loads(gemini.content)["generationConfig"]["maxOutputTokens"], 1024)
+        self.assertEqual(groq_payload["max_completion_tokens"], 1024)
+        self.assertEqual(cloudflare_payload["max_tokens"], 1024)
         self.assertEqual(cloudflare_payload["response_format"]["type"], "json_schema")
         schema = cloudflare_payload["response_format"]["json_schema"]
         self.assertEqual(schema, groq_payload["response_format"]["json_schema"]["schema"])
