@@ -54,7 +54,7 @@ Local embeddings can run on CPU. Browser clients do not need a model installatio
 Install Python and Ollama first, then open PowerShell:
 
 ```powershell
-git clone --branch codex/smart-study-planner-rag https://github.com/nhbl-ai/rag-study-buddy.git
+git clone --branch introse/smart-study-planner-rag https://github.com/nhbl-ai/rag-study-buddy.git
 cd rag-study-buddy
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt

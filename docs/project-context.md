@@ -6,7 +6,7 @@ RAG Study Buddy is a personal portfolio prototype for documentation question ans
 
 The web app uses a fixed library of three public LangChain documentation pages. Authentication, uploads, persistent conversations and production deployment are outside the implemented scope.
 
-The `codex/smart-study-planner-rag` branch packages the Python RAG component for use alongside the Smart Study Planner backend. Python code remains under `src/` and `tests/`. Planner HTTP integration and access-controlled document processing are separate work.
+The `introse/smart-study-planner-rag` branch packages the Python RAG component for use alongside the Smart Study Planner backend. Python code remains under `src/` and `tests/`. Planner HTTP integration and access-controlled document processing are separate work.
 
 ## Active architecture
 
